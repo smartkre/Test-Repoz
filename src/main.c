@@ -5,15 +5,15 @@
 
 // --- Функции задержки (жёстко под 8 МГц) ---
 void delay_ms(uint32_t ms) {
-    for (uint32_t t = 0; t < ms; t++) {
-        for (volatile uint32_t i = 0; i < 8000; i++) {
+    for (volatile uint32_t t = 0; t < ms; t++) {
+        for (volatile uint32_t i = 0; i < 800; i++) {  // Уменьшено с 8000 до 800
             __asm__("nop");
         }
     }
 }
 
 void delay_us(uint32_t us) {
-    for (uint32_t t = 0; t < us; t++) {
+    for (volatile uint32_t t = 0; t < us; t++) {
         for (volatile uint32_t i = 0; i < 8; i++) {
             __asm__("nop");
         }
