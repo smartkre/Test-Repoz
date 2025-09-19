@@ -1,26 +1,20 @@
-#include "stm32f1xx.h"
+#include "stm32f103x6.h"  // Явное включение для STM32F103C6T6
 
 // Pin definitions for STM32
-#define VCC_GPIO_PORT       GPIOB
 #define VCC_PIN             GPIO_PIN_8
-#define RST_GPIO_PORT       GPIOB
 #define RST_PIN             GPIO_PIN_13  // Controls 12V via NPN transistor
-#define SCI_GPIO_PORT       GPIOB
 #define SCI_PIN             GPIO_PIN_12
-#define SDO_GPIO_PORT       GPIOB
 #define SDO_PIN             GPIO_PIN_11
-#define SII_GPIO_PORT       GPIOB
 #define SII_PIN             GPIO_PIN_10
-#define SDI_GPIO_PORT       GPIOB
 #define SDI_PIN             GPIO_PIN_9
 
 // Button pin for starting programming
-#define BUTTON_GPIO_PORT    GPIOA
 #define BUTTON_PIN          GPIO_PIN_0  // Button to GND, internal pull-up
+#define BUTTON_GPIO_PORT    GPIOA
 
 // LED pin for indication (built-in on PC13 for Blue Pill-like boards)
-#define LED_GPIO_PORT       GPIOC
 #define LED_PIN             GPIO_PIN_13  // Active low
+#define LED_GPIO_PORT       GPIOC
 
 // Fuse addresses
 #define HFUSE  0x747C
