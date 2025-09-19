@@ -52,6 +52,18 @@ void blinkLED(uint32_t times, uint32_t on_ms, uint32_t off_ms);
 int main(void) {
     GPIO_Init();
 
+    // Initial indication: 3 cycles of 2 blinks (300ms on, 1s pause)
+    for (uint32_t cycle = 0; cycle < 3; cycle++) {
+        GPIOC_BRR = LED_PIN;  // LED on
+        delay_ms(300);
+        GPIOC_BSRR = LED_PIN; // LED off
+        delay_ms(100);        // Short pause between blinks
+        GPIOC_BRR = LED_PIN;  // LED on
+        delay_ms(300);
+        GPIOC_BSRR = LED_PIN; // LED off
+        delay_ms(1000 - 200); // 1s pause minus the 200ms already used
+    }
+
     // Wait for button press (active low)
     while ((GPIOA_IDR & BUTTON_PIN) != 0) {
         // Wait until button is pressed
