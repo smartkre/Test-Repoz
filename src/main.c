@@ -1,20 +1,35 @@
-#include "stm32f103x6.h"  // Явное включение для STM32F103C6T6
+#include <stdint.h>
 
-// Pin definitions for STM32
-#define VCC_PIN             GPIO_PIN_8
-#define RST_PIN             GPIO_PIN_13  // Controls 12V via NPN transistor
-#define SCI_PIN             GPIO_PIN_12
-#define SDO_PIN             GPIO_PIN_11
-#define SII_PIN             GPIO_PIN_10
-#define SDI_PIN             GPIO_PIN_9
+#define PERIPH_BASE       0x40000000U
+#define APB2PERIPH_BASE   (PERIPH_BASE + 0x10000U)
+#define AHBPERIPH_BASE    (PERIPH_BASE + 0x20000U)
 
-// Button pin for starting programming
-#define BUTTON_PIN          GPIO_PIN_0  // Button to GND, internal pull-up
-#define BUTTON_GPIO_PORT    GPIOA
+#define RCC_BASE          (AHBPERIPH_BASE + 0x1000U)
+#define GPIOA_BASE        (APB2PERIPH_BASE + 0x0800U)
+#define GPIOB_BASE        (APB2PERIPH_BASE + 0x0C00U)
+#define GPIOC_BASE        (APB2PERIPH_BASE + 0x1000U)
 
-// LED pin for indication (built-in on PC13 for Blue Pill-like boards)
-#define LED_PIN             GPIO_PIN_13  // Active low
-#define LED_GPIO_PORT       GPIOC
+#define RCC_APB2ENR       (*(volatile uint32_t*)(RCC_BASE + 0x18U))
+#define GPIOA_CRL         (*(volatile uint32_t*)(GPIOA_BASE + 0x00U))
+#define GPIOA_BSRR        (*(volatile uint32_t*)(GPIOA_BASE + 0x10U))
+#define GPIOA_IDR         (*(volatile uint32_t*)(GPIOA_BASE + 0x08U))
+#define GPIOB_CRH         (*(volatile uint32_t*)(GPIOB_BASE + 0x04U))
+#define GPIOB_BSRR        (*(volatile uint32_t*)(GPIOB_BASE + 0x10U))
+#define GPIOB_BRR         (*(volatile uint32_t*)(GPIOB_BASE + 0x14U))
+#define GPIOB_IDR         (*(volatile uint32_t*)(GPIOB_BASE + 0x08U))
+#define GPIOC_CRH         (*(volatile uint32_t*)(GPIOC_BASE + 0x04U))
+#define GPIOC_BSRR        (*(volatile uint32_t*)(GPIOC_BASE + 0x10U))
+#define GPIOC_BRR         (*(volatile uint32_t*)(GPIOC_BASE + 0x14U))
+
+// Pin definitions (bit positions)
+#define BUTTON_PIN        (1 << 0)  // PA0
+#define LED_PIN           (1 << 13) // PC13
+#define VCC_PIN           (1 << 8)  // PB8
+#define RST_PIN           (1 << 13) // PB13
+#define SCI_PIN           (1 << 12) // PB12
+#define SDO_PIN           (1 << 11) // PB11
+#define SII_PIN           (1 << 10) // PB10
+#define SDI_PIN           (1 << 9)  // PB9
 
 // Fuse addresses
 #define HFUSE  0x747C
@@ -35,12 +50,10 @@ void delay_ms(uint32_t ms);
 void blinkLED(uint32_t times, uint32_t on_ms, uint32_t off_ms);
 
 int main(void) {
-    // SystemInit() called from startup_stm32f103xb.s, sets HSI 8MHz
-
     GPIO_Init();
 
     // Wait for button press (active low)
-    while ((BUTTON_GPIO_PORT->IDR & BUTTON_PIN) != 0) {
+    while ((GPIOA_IDR & BUTTON_PIN) != 0) {
         // Wait until button is pressed
     }
 
@@ -48,28 +61,28 @@ int main(void) {
     delay_ms(50);
 
     // Turn on LED to indicate programming start
-    LED_GPIO_PORT->BRR = LED_PIN;  // LED on
+    GPIOC_BRR = LED_PIN;  // LED on
 
     // Initialize pins to enter programming mode
     // Set SDO to output
-    SDO_GPIO_PORT->CRH &= ~(GPIO_CRH_MODE11 | GPIO_CRH_CNF11);
-    SDO_GPIO_PORT->CRH |= GPIO_CRH_MODE11_0;  // Output 10MHz
+    GPIOB_CRH &= ~(0xF << (11 * 4));  // Clear SDO (PB11) mode
+    GPIOB_CRH |= (0x1 << (11 * 4));   // Output 10MHz
 
     // Set low levels
-    SDI_GPIO_PORT->BRR = SDI_PIN;  // SDI low
-    SII_GPIO_PORT->BRR = SII_PIN;  // SII low
-    SDO_GPIO_PORT->BRR = SDO_PIN;  // SDO low
-    RST_GPIO_PORT->BSRR = RST_PIN; // RST high (12V off, transistor off)
+    GPIOB_BRR = SDI_PIN;  // SDI low
+    GPIOB_BRR = SII_PIN;  // SII low
+    GPIOB_BRR = SDO_PIN;  // SDO low
+    GPIOB_BSRR = RST_PIN; // RST high (12V off, transistor off)
 
     // Enter High-voltage Serial programming mode
-    VCC_GPIO_PORT->BSRR = VCC_PIN;  // VCC On
+    GPIOB_BSRR = VCC_PIN;  // VCC On
     delayMicroseconds(20);
-    RST_GPIO_PORT->BRR = RST_PIN;   // RST low (12V on, transistor on)
+    GPIOB_BRR = RST_PIN;   // RST low (12V on, transistor on)
     delayMicroseconds(10);
 
     // Set SDO to input
-    SDO_GPIO_PORT->CRH &= ~(GPIO_CRH_MODE11 | GPIO_CRH_CNF11);
-    SDO_GPIO_PORT->CRH |= GPIO_CRH_CNF11_0;  // Input floating
+    GPIOB_CRH &= ~(0xF << (11 * 4));  // Clear SDO (PB11) mode
+    GPIOB_CRH |= (0x4 << (11 * 4));   // Input floating
 
     delayMicroseconds(300);
 
@@ -82,12 +95,12 @@ int main(void) {
     uint8_t read_hfuse = readHFuse();
 
     // Exit programming mode
-    SCI_GPIO_PORT->BRR = SCI_PIN;  // SCI low
-    VCC_GPIO_PORT->BRR = VCC_PIN;  // VCC Off
-    RST_GPIO_PORT->BSRR = RST_PIN; // RST high (12V Off)
+    GPIOB_BRR = SCI_PIN;  // SCI low
+    GPIOB_BRR = VCC_PIN;  // VCC Off
+    GPIOB_BSRR = RST_PIN; // RST high (12V Off)
 
     // Turn off LED after programming
-    LED_GPIO_PORT->BSRR = LED_PIN;  // LED off
+    GPIOC_BSRR = LED_PIN;  // LED off
 
     // Indicate result
     if (read_lfuse == EXPECTED_LFUSE && read_hfuse == EXPECTED_HFUSE) {
@@ -101,77 +114,59 @@ int main(void) {
         }
     }
 
-    // Infinite loop after success
     while (1) {
         // Do nothing
     }
 }
 
-// GPIO Initialization
 void GPIO_Init(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
+    RCC_APB2ENR |= (1 << 2) | (1 << 3) | (1 << 4);  // Enable GPIOA, GPIOB, GPIOC clocks
 
     // VCC (PB8), RST (PB13), SCI (PB12), SII (PB10), SDI (PB9) as output
-    GPIOB->CRH &= ~(GPIO_CRH_MODE8 | GPIO_CRH_CNF8);
-    GPIOB->CRH |= GPIO_CRH_MODE8_0;  // PB8 output
-
-    GPIOB->CRH &= ~(GPIO_CRH_MODE9 | GPIO_CRH_CNF9);
-    GPIOB->CRH |= GPIO_CRH_MODE9_0;  // PB9 output
-
-    GPIOB->CRH &= ~(GPIO_CRH_MODE10 | GPIO_CRH_CNF10);
-    GPIOB->CRH |= GPIO_CRH_MODE10_0; // PB10 output
-
-    GPIOB->CRH &= ~(GPIO_CRH_MODE11 | GPIO_CRH_CNF11);
-    GPIOB->CRH |= GPIO_CRH_MODE11_0; // PB11 output (SDO)
-
-    GPIOB->CRH &= ~(GPIO_CRH_MODE12 | GPIO_CRH_CNF12);
-    GPIOB->CRH |= GPIO_CRH_MODE12_0; // PB12 output
-
-    GPIOB->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
-    GPIOB->CRH |= GPIO_CRH_MODE13_0; // PB13 output
+    GPIOB_CRH &= ~(0xF << (8 * 4));   GPIOB_CRH |= (0x1 << (8 * 4));  // PB8 output
+    GPIOB_CRH &= ~(0xF << (13 * 4));  GPIOB_CRH |= (0x1 << (13 * 4)); // PB13 output
+    GPIOB_CRH &= ~(0xF << (12 * 4));  GPIOB_CRH |= (0x1 << (12 * 4)); // PB12 output
+    GPIOB_CRH &= ~(0xF << (10 * 4));  GPIOB_CRH |= (0x1 << (10 * 4)); // PB10 output
+    GPIOB_CRH &= ~(0xF << (9 * 4));   GPIOB_CRH |= (0x1 << (9 * 4));  // PB9 output
 
     // Button PA0 input pull-up
-    GPIOA->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
-    GPIOA->CRL |= GPIO_CRL_CNF0_1;  // Input pull-up
-    GPIOA->BSRR = BUTTON_PIN;
+    GPIOA_CRL &= ~(0xF << (0 * 4));   GPIOA_CRL |= (0x8 << (0 * 4));  // Input pull-up
+    GPIOA_BSRR = BUTTON_PIN;
 
     // LED PC13 output
-    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
-    GPIOC->CRH |= GPIO_CRH_MODE13_0;  // Output
-    GPIOC->BSRR = LED_PIN;            // LED off
+    GPIOC_CRH &= ~(0xF << (13 * 4));  GPIOC_CRH |= (0x1 << (13 * 4)); // Output
+    GPIOC_BSRR = LED_PIN;             // LED off
 }
 
-// Delay functions (adjusted for 8MHz HSI from SystemInit)
 void delayMicroseconds(uint32_t us) {
-    for (volatile uint32_t i = 0; i < us * 2; i++) __NOP();  // Approx 1us per 4 cycles at 8MHz
+    for (volatile uint32_t i = 0; i < us * 2; i++) __asm__("nop");  // Approx 1us per 4 cycles at 8MHz
 }
 
 void delay_ms(uint32_t ms) {
-    for (volatile uint32_t i = 0; i < ms * 8000; i++) __NOP();  // Approx 1ms per 8000 cycles at 8MHz
+    for (volatile uint32_t i = 0; i < ms * 8000; i++) __asm__("nop");  // Approx 1ms per 8000 cycles at 8MHz
 }
 
-// Blink LED
 void blinkLED(uint32_t times, uint32_t on_ms, uint32_t off_ms) {
     for (uint32_t i = 0; i < times; i++) {
-        LED_GPIO_PORT->BRR = LED_PIN;  // On
+        GPIOC_BRR = LED_PIN;  // On
         delay_ms(on_ms);
-        LED_GPIO_PORT->BSRR = LED_PIN; // Off
+        GPIOC_BSRR = LED_PIN; // Off
         delay_ms(off_ms);
     }
 }
 
 uint8_t shiftOut(uint8_t val1, uint8_t val2) {
     uint16_t inBits = 0;
-    while (!(SDO_GPIO_PORT->IDR & SDO_PIN));
+    while (!(GPIOB_IDR & SDO_PIN));
     unsigned int dout = (unsigned int)val1 << 2;
     unsigned int iout = (unsigned int)val2 << 2;
     for (int ii = 10; ii >= 0; ii--) {
-        if (dout & (1 << ii)) SDI_GPIO_PORT->BSRR = SDI_PIN; else SDI_GPIO_PORT->BRR = SDI_PIN;
-        if (iout & (1 << ii)) SII_GPIO_PORT->BSRR = SII_PIN; else SII_GPIO_PORT->BRR = SII_PIN;
+        if (dout & (1 << ii)) GPIOB_BSRR = SDI_PIN; else GPIOB_BRR = SDI_PIN;
+        if (iout & (1 << ii)) GPIOB_BSRR = SII_PIN; else GPIOB_BRR = SII_PIN;
         inBits <<= 1;
-        if (SDO_GPIO_PORT->IDR & SDO_PIN) inBits |= 1;
-        SCI_GPIO_PORT->BSRR = SCI_PIN;  // High
-        SCI_GPIO_PORT->BRR = SCI_PIN;   // Low
+        if (GPIOB_IDR & SDO_PIN) inBits |= 1;
+        GPIOB_BSRR = SCI_PIN;  // High
+        GPIOB_BRR = SCI_PIN;   // Low
     }
     return (uint8_t)(inBits >> 2);
 }
