@@ -10,7 +10,7 @@ LDFLAGS = -T STM32F103X6_FLASH.ld -nostdlib -Wl,-Map=build/firmware.map,--gc-sec
 
 # Исходники
 SRC = src/main.c src/system_stm32f1xx.c src/init.c
-ASM = src/startup_stm32f103xb.s
+ASM = src/startup_stm32f103x6.s
 
 # Каталог сборки и имя прошивки
 BUILD_DIR = build
