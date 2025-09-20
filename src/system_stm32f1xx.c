@@ -8,7 +8,7 @@
   *     user application:
   *      - SystemInit(): Setups the system clock (System clock source, PLL Multiplier
   *                      factors, AHB/APBx prescalers and Flash settings). 
-  *                      This function is called at startup just after reset and 
+  *                      This function is called at startup just после reset and 
   *                      before branch to main program. This call is made inside
   *                      the "startup_stm32f1xx_xx.s" file.
   *
@@ -19,7 +19,7 @@
   *      - SystemCoreClockUpdate(): Updates the variable SystemCoreClock and must
   *                                 be called whenever the core clock is changed
   *                                 during program execution.
-  *
+  * 
   * 2. After each device reset the HSI (8 MHz) is used as system clock source.
   *    Then SystemInit() function is called, in "startup_stm32f1xx_xx.s" file, to
   *    configure the system clock before to branch to main program.
@@ -129,13 +129,6 @@
   * @{
   */
 
-/**
-  * @brief  Setup the microcontroller system.
-  *         Initializes the Embedded Flash Interface, the PLL and updates the 
-  *         SystemFrequency variable.
-  * @param  None
-  * @retval None
-  */
 uint32_t SystemCoreClock = 8000000U;  /*!< System Clock Frequency (Core Clock)
                                            - PCLK2 = HCLK
                                            - PCLK1 = HCLK/2 */
@@ -174,17 +167,10 @@ void SystemInit (void)
 {
     RCC->CR |= RCC_CR_HSION;          // Включить HSI
     while (!(RCC->CR & RCC_CR_HSIRDY));  // Ждать готовности HSI
-
-    RCC->CFGR &= ~RCC_CFGR_PLLSRC;    // PLL source = HSI / 2 (4 МГц)
-    RCC->CFGR &= ~RCC_CFGR_PLLMULL;   // Сброс множителя PLL (x2)
+    RCC->CFGR &= ~RCC_CFGR_HPRE;      // Сброс AHB prescaler (HCLK = SYSCLK)
+    RCC->CFGR &= ~RCC_CFGR_PLLSRC;    // Отключить PLL (использовать только HSI)
+    RCC->CFGR &= ~RCC_CFGR_PLLMULL;   // Сброс множителя PLL
     RCC->CR &= ~RCC_CR_PLLON;         // Выключить PLL
-    while (RCC->CR & RCC_CR_PLLRDY);  // Ждать отключения PLL
-
-    RCC->CFGR &= ~RCC_CFGR_HPRE;      // AHB prescaler = 1 (HCLK = SYSCLK = 8 МГц)
-    RCC->CFGR &= ~RCC_CFGR_PPRE1;     // APB1 prescaler = 1 (PCLK1 = HCLK = 8 МГц)
-    RCC->CFGR &= ~RCC_CFGR_PPRE2;     // APB2 prescaler = 1 (PCLK2 = HCLK = 8 МГц)
-    RCC->CFGR &= ~RCC_CFGR_SW;        // SYSCLK = HSI
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);  // Ждать переключения на HSI
 
 #if defined(USER_VECT_TAB_ADDRESS)
     SCB->VTOR = VECT_TAB_BASE_ADDRESS | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
