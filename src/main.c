@@ -1,7 +1,6 @@
 #include "stm32f1xx.h"
 
-#define LED_PIN     (1U << 13)  // PC13
-#define BUTTON_PIN  (1U << 0)   // PA0
+#define TEST_PIN     (1U << 0)  // PB0
 
 // --- Функции задержки с TIM2 ---
 void TIM2_Init(void) {
@@ -24,49 +23,23 @@ void delay_ms(uint32_t ms) {
 
 // --- Инициализация GPIO ---
 void GPIO_Init(void) {
-    // Включаем тактирование GPIOA, GPIOB, GPIOC
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
+    // Включаем тактирование GPIOB
+    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
 
-    // Настройка PC13 как выход push-pull 10MHz
-    GPIOC->CRH &= ~(0xF << ((13 - 8) * 4));
-    GPIOC->CRH |= (0x1 << ((13 - 8) * 4));
-
-    // Настройка PA0 как вход Floating
-    GPIOA->CRL &= ~(0xF << (0 * 4));
-    GPIOA->CRL |= (0x4 << (0 * 4)); // 0100: floating input
+    // Настройка PB0 как выход push-pull 10MHz
+    GPIOB->CRL &= ~(0xF << 0);           // Очищаем настройки PB0
+    GPIOB->CRL |= (0x1 << 0);            // Настраиваем PB0 как выход 10MHz push-pull
 }
 
 int main(void) {
     GPIO_Init();
     TIM2_Init();  // Инициализация таймера после GPIO
 
-    // Выключим LED (PC13 высокий = выкл)
-    GPIOC->BSRR = LED_PIN;
-    delay_ms(50);
-
-    // --- Индикация старта (3 мигания) ---
-    for (uint32_t cycle = 0; cycle < 3; cycle++) {
-        GPIOC->BRR = LED_PIN;  // On
-        delay_ms(300);
-        GPIOC->BSRR = LED_PIN; // Off
-        delay_ms(200);
-    }
-
-    // --- Ждём отпускание кнопки PA0 ---
-    while ((GPIOA->IDR & BUTTON_PIN) != 0) {
-        // Мигаем быстро, пока кнопка нажата
-        GPIOC->BRR = LED_PIN;
-        delay_ms(100);
-        GPIOC->BSRR = LED_PIN;
-        delay_ms(100);
-    }
-
-    // --- Основной цикл ---
+    // Бесконечный цикл переключения PB0 для измерения частоты
     while (1) {
-        // Моргание LED каждые 500 мс
-        GPIOC->BRR = LED_PIN;   // On
-        delay_ms(500);
-        GPIOC->BSRR = LED_PIN;  // Off
-        delay_ms(500);
+        GPIOB->BSRR = TEST_PIN;          // Устанавливаем PB0 в высокий уровень
+        delay_us(100);                   // Задержка 100 микросекунд
+        GPIOB->BRR = TEST_PIN;           // Устанавливаем PB0 в низкий уровень
+        delay_us(100);                   // Задержка 100 микросекунд
     }
 }
