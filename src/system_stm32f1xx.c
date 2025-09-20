@@ -8,7 +8,7 @@
   *     user application:
   *      - SystemInit(): Setups the system clock (System clock source, PLL Multiplier
   *                      factors, AHB/APBx prescalers and Flash settings). 
-  *                      This function is called at startup just после reset and 
+  *                      This function is called at startup just after reset and 
   *                      before branch to main program. This call is made inside
   *                      the "startup_stm32f1xx_xx.s" file.
   *
@@ -19,7 +19,7 @@
   *      - SystemCoreClockUpdate(): Updates the variable SystemCoreClock and must
   *                                 be called whenever the core clock is changed
   *                                 during program execution.
-  * 
+  *
   * 2. After each device reset the HSI (8 MHz) is used as system clock source.
   *    Then SystemInit() function is called, in "startup_stm32f1xx_xx.s" file, to
   *    configure the system clock before to branch to main program.
@@ -108,10 +108,13 @@
 #endif /* VECT_TAB_SRAM */
 
 #if !defined(VECT_TAB_OFFSET)
-  #define VECT_TAB_OFFSET          0x0U       /*!< Vector Table base offset field. 
-                                                   This value must be a multiple of 0x200. */
+#define VECT_TAB_OFFSET         0x00000000U     /*!< Vector Table offset field.
+                                                     This value must be a multiple of 0x200. */
 #endif /* VECT_TAB_OFFSET */
+
 #endif /* USER_VECT_TAB_ADDRESS */
+
+/******************************************************************************/
 
 /**
   * @}
@@ -129,12 +132,17 @@
   * @{
   */
 
-uint32_t SystemCoreClock = 8000000U;  /*!< System Clock Frequency (Core Clock)
-                                           - PCLK2 = HCLK
-                                           - PCLK1 = HCLK/2 */
-
+  /* This variable is updated in three ways:
+      1) by calling CMSIS function SystemCoreClockUpdate()
+      2) by calling HAL API function HAL_RCC_GetHCLKFreq()
+      3) each time HAL_RCC_ClockConfig() is called to configure the system clock frequency 
+         Note: If you use this function to configure the system clock; then there
+               is no need to call the 2 first functions listed above, since SystemCoreClock
+               variable is updated automatically.
+  */
+uint32_t SystemCoreClock = 8000000;
 const uint8_t AHBPrescTable[16U] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 6, 7, 8, 9};
-const uint8_t APBPrescTable[8U] = {0, 0, 0, 0, 1, 2, 3, 4};
+const uint8_t APBPrescTable[8U] =  {0, 0, 0, 0, 1, 2, 3, 4};
 
 /**
   * @}
@@ -144,15 +152,17 @@ const uint8_t APBPrescTable[8U] = {0, 0, 0, 0, 1, 2, 3, 4};
   * @{
   */
 
-#if defined (DATA_IN_ExtSRAM)
+#if defined(STM32F100xE) || defined(STM32F101xE) || defined(STM32F101xG) || defined(STM32F103xE) || defined(STM32F103xG)
+#ifdef DATA_IN_ExtSRAM
   static void SystemInit_ExtMemCtl(void); 
 #endif /* DATA_IN_ExtSRAM */
+#endif /* STM32F100xE || STM32F101xE || STM32F101xG || STM32F103xE || STM32F103xG */
 
 /**
   * @}
   */
 
-/** @addtogroup STM32F1xx_System_Functions
+/** @addtogroup STM32F1xx_System_Private_Functions
   * @{
   */
 
@@ -160,25 +170,22 @@ const uint8_t APBPrescTable[8U] = {0, 0, 0, 0, 1, 2, 3, 4};
   * @brief  Setup the microcontroller system
   *         Initialize the Embedded Flash Interface, the PLL and update the 
   *         SystemCoreClock variable.
+  * @note   This function should be used only after reset.
   * @param  None
   * @retval None
   */
 void SystemInit (void)
 {
-    RCC->CR |= RCC_CR_HSION;          // Включить HSI
-    while (!(RCC->CR & RCC_CR_HSIRDY));  // Ждать готовности HSI
-    RCC->CFGR &= ~RCC_CFGR_HPRE;      // Сброс AHB prescaler (HCLK = SYSCLK)
-    RCC->CFGR &= ~RCC_CFGR_PLLSRC;    // Отключить PLL (использовать только HSI)
-    RCC->CFGR &= ~RCC_CFGR_PLLMULL;   // Сброс множителя PLL
-    RCC->CR &= ~RCC_CR_PLLON;         // Выключить PLL
+#if defined(STM32F100xE) || defined(STM32F101xE) || defined(STM32F101xG) || defined(STM32F103xE) || defined(STM32F103xG)
+  #ifdef DATA_IN_ExtSRAM
+    SystemInit_ExtMemCtl(); 
+  #endif /* DATA_IN_ExtSRAM */
+#endif 
 
+  /* Configure the Vector Table location -------------------------------------*/
 #if defined(USER_VECT_TAB_ADDRESS)
-    SCB->VTOR = VECT_TAB_BASE_ADDRESS | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
+  SCB->VTOR = VECT_TAB_BASE_ADDRESS | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
 #endif /* USER_VECT_TAB_ADDRESS */
-
-#if defined(DATA_IN_ExtSRAM)
-  SystemInit_ExtMemCtl(); 
-#endif /* DATA_IN_ExtSRAM */
 }
 
 /**
@@ -190,7 +197,7 @@ void SystemInit (void)
   * @note   Each time the core clock (HCLK) changes, this function must be called
   *         to update SystemCoreClock variable value. Otherwise, any configuration
   *         based on this variable will be incorrect.         
-  *         
+  *     
   * @note   - The system frequency computed by this function is not the real 
   *           frequency in the chip. It is calculated based on the predefined 
   *           constant and the selected clock source:
@@ -200,16 +207,16 @@ void SystemInit (void)
   *           - If SYSCLK source is HSE, SystemCoreClock will contain the HSE_VALUE(**)
   *                          
   *           - If SYSCLK source is PLL, SystemCoreClock will contain the HSE_VALUE(**) 
-  *             or HSI_VALUE(*) multiplied/divided by the PLL factors.
+  *             or HSI_VALUE(*) multiplied by the PLL factors.
   *         
-  *         (*) HSI_VALUE is a constant defined in stm32f1xx_hal_conf.h file (default value
+  *         (*) HSI_VALUE is a constant defined in stm32f1xx.h file (default value
   *             8 MHz) but the real value may vary depending on the variations
   *             in voltage and temperature.   
   *    
-  *         (**) HSE_VALUE is a constant defined in stm32f1xx_hal_conf.h file (default value
-  *              8 MHz), user has to ensure that HSE_VALUE is same as the real
-  *              frequency of the crystal used. Otherwise, this function may
-  *              have wrong result.
+  *         (**) HSE_VALUE is a constant defined in stm32f1xx.h file (default value
+  *              8 MHz or 25 MHz, depending on the product used), user has to ensure
+  *              that HSE_VALUE is same as the real frequency of the crystal used.
+  *              Otherwise, this function may have wrong result.
   *                
   *         - The result of this function could be not correct when using fractional
   *           value for HSE crystal.
@@ -218,15 +225,15 @@ void SystemInit (void)
   */
 void SystemCoreClockUpdate (void)
 {
-  uint32_t tmp = 0, pllmull = 0, pllsource = 0;
+  uint32_t tmp = 0U, pllmull = 0U, pllsource = 0U;
 
 #if defined(STM32F105xC) || defined(STM32F107xC)
-  uint32_t prediv1source = 0, prediv1factor = 0, prediv2factor = 0, pll2mull = 0;
-#endif /* STM32F105xC || STM32F107xC */
+  uint32_t prediv1source = 0U, prediv1factor = 0U, prediv2factor = 0U, pll2mull = 0U;
+#endif /* STM32F105xC */
 
 #if defined(STM32F100xB) || defined(STM32F100xE)
-  uint32_t prediv1factor = 0;
-#endif /* STM32F100xB || STM32F100xE */
+  uint32_t prediv1factor = 0U;
+#endif /* STM32F100xB or STM32F100xE */
     
   /* Get SYSCLK source -------------------------------------------------------*/
   tmp = RCC->CFGR & RCC_CFGR_SWS;
@@ -240,29 +247,30 @@ void SystemCoreClockUpdate (void)
       SystemCoreClock = HSE_VALUE;
       break;
     case 0x08U:  /* PLL used as system clock */
+
       /* Get PLL clock source and multiplication factor ----------------------*/
       pllmull = RCC->CFGR & RCC_CFGR_PLLMULL;
       pllsource = RCC->CFGR & RCC_CFGR_PLLSRC;
       
 #if !defined(STM32F105xC) && !defined(STM32F107xC)      
-      pllmull = ( pllmull >> 18) + 2;
+      pllmull = ( pllmull >> 18U) + 2U;
       
       if (pllsource == 0x00U)
       {
         /* HSI oscillator clock divided by 2 selected as PLL clock entry */
-        SystemCoreClock = (HSI_VALUE >> 1) * pllmull;
+        SystemCoreClock = (HSI_VALUE >> 1U) * pllmull;
       }
       else
       {
  #if defined(STM32F100xB) || defined(STM32F100xE)
-       prediv1factor = (RCC->CFGR2 & RCC_CFGR2_PREDIV1) + 1;
+       prediv1factor = (RCC->CFGR2 & RCC_CFGR2_PREDIV1) + 1U;
        /* HSE oscillator clock selected as PREDIV1 clock entry */
        SystemCoreClock = (HSE_VALUE / prediv1factor) * pllmull; 
  #else
         /* HSE selected as PLL clock entry */
         if ((RCC->CFGR & RCC_CFGR_PLLXTPRE) != (uint32_t)RESET)
         {/* HSE oscillator clock divided by 2 */
-          SystemCoreClock = (HSE_VALUE >> 1) * pllmull;
+          SystemCoreClock = (HSE_VALUE >> 1U) * pllmull;
         }
         else
         {
@@ -271,27 +279,28 @@ void SystemCoreClockUpdate (void)
  #endif
       }
 #else
-      pllmull = pllmull >> 18;
+      pllmull = pllmull >> 18U;
       
-      if (pllmull != 0x0D)
+      if (pllmull != 0x0DU)
       {
-        pllmull += 2;
+         pllmull += 2U;
       }
       else
       { /* PLL multiplication factor = PLL input clock * 6.5 */
-        pllmull = 13 / 2; 
+        pllmull = 13U / 2U; 
       }
             
       if (pllsource == 0x00U)
       {
         /* HSI oscillator clock divided by 2 selected as PLL clock entry */
-        SystemCoreClock = (HSI_VALUE >> 1) * pllmull;
+        SystemCoreClock = (HSI_VALUE >> 1U) * pllmull;
       }
       else
       {/* PREDIV1 selected as PLL clock entry */
+        
         /* Get PREDIV1 clock source and division factor */
         prediv1source = RCC->CFGR2 & RCC_CFGR2_PREDIV1SRC;
-        prediv1factor = (RCC->CFGR2 & RCC_CFGR2_PREDIV1) + 1;
+        prediv1factor = (RCC->CFGR2 & RCC_CFGR2_PREDIV1) + 1U;
         
         if (prediv1source == 0U)
         { 
@@ -300,6 +309,7 @@ void SystemCoreClockUpdate (void)
         }
         else
         {/* PLL2 clock selected as PREDIV1 clock entry */
+          
           /* Get PREDIV2 division factor and PLL2 multiplication factor */
           prediv2factor = ((RCC->CFGR2 & RCC_CFGR2_PREDIV2) >> 4U) + 1U;
           pll2mull = ((RCC->CFGR2 & RCC_CFGR2_PLL2MUL) >> 8U) + 2U; 
