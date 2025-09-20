@@ -1,51 +1,54 @@
 #include "stm32f1xx.h"
 
-void delay_us(uint32_t us) {
-    // Задержка в микросекундах при SYSCLK=8 МГц
-    // 1 такт ~0.125 мкс → нужно 8 тактов на 1 мкс
-    for(uint32_t i = 0; i < us * 8; i++) {
+void clock_init(void) {
+    // 1. Включаем HSI
+    RCC->CR |= RCC_CR_HSION;
+    while (!(RCC->CR & RCC_CR_HSIRDY));
+
+    // 2. Отключаем PLL
+    RCC->CR &= ~RCC_CR_PLLON;
+    while (RCC->CR & RCC_CR_PLLRDY);
+
+    // 3. Сбрасываем настройки делителей
+    RCC->CFGR = 0x00000000;
+
+    // 4. Выбираем HSI как источник системной частоты
+    RCC->CFGR |= RCC_CFGR_SW_HSI;
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);
+}
+
+void delay_ms(uint32_t ms) {
+    // При SYSCLK = 8 МГц одна итерация ~1 мкс (цикл + оптимизация)
+    // Подогнано для более точного результата
+    for (uint32_t i = 0; i < ms * 800; i++) {
         __asm__("nop");
     }
 }
 
 int main(void) {
-    // --- Настройка тактирования ---
-    RCC->CR |= RCC_CR_HSION;                       // включаем HSI
-    while ((RCC->CR & RCC_CR_HSIRDY) == 0);        // ждём готовности
+    clock_init();
 
-    RCC->CFGR &= ~RCC_CFGR_SW;                     // сброс выбора источника
-    RCC->CFGR |= RCC_CFGR_SW_HSI;                  // выбираем HSI = 8 МГц
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);
+    // Включаем тактирование портов
+    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN | RCC_APB2ENR_IOPBEN;
 
-    RCC->CFGR &= ~RCC_CFGR_HPRE;                   // AHB = /1
-    RCC->CFGR &= ~RCC_CFGR_PPRE1;                  // APB1 = /1
-    RCC->CFGR &= ~RCC_CFGR_PPRE2;                  // APB2 = /1
-
-    // --- Настройка портов ---
-    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;            // тактирование GPIOC
-    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;            // тактирование GPIOB
-
-    // PC13 как выход push-pull
+    // PC13 как выход push-pull (2 МГц)
     GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
-    GPIOC->CRH |= GPIO_CRH_MODE13_0;               // выход 10 МГц, PP
+    GPIOC->CRH |= GPIO_CRH_MODE13_1;
 
-    // PB0 как выход push-pull
+    // PB0 как выход push-pull (50 МГц)
     GPIOB->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
-    GPIOB->CRL |= GPIO_CRL_MODE0_1;                // выход 2 МГц, PP
+    GPIOB->CRL |= GPIO_CRL_MODE0_1 | GPIO_CRL_MODE0_0;
 
-    // --- Основной цикл ---
     while (1) {
-        // Генерация меандра 1 МГц на PB0
-        GPIOB->BSRR = GPIO_BSRR_BS0;  // PB0 = 1
-        __asm__("nop\nnop\nnop\nnop"); // задержка ~0.5 мкс
-        GPIOB->BSRR = GPIO_BSRR_BR0;  // PB0 = 0
-        __asm__("nop\nnop\nnop\nnop"); // задержка ~0.5 мкс
+        // ---- PB0: генерация ~1 МГц ----
+        GPIOB->ODR ^= (1 << 0);   // toggle PB0
+        for (volatile int i = 0; i < 4; i++); // минимальная задержка
 
-        // Моргание светодиода на PC13 с частотой 10 Гц
+        // ---- PC13: мигание 10 Гц ----
         static uint32_t counter = 0;
         counter++;
-        if (counter >= 4000) {        // ~0.05 сек при 8 МГц
-            GPIOC->ODR ^= (1 << 13);  // инверсия PC13
+        if (counter >= 40000) {   // при SYSCLK=8 МГц примерно 100 мс
+            GPIOC->ODR ^= (1 << 13);
             counter = 0;
         }
     }
