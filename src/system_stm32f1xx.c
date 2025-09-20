@@ -166,7 +166,7 @@ const uint8_t APBPrescTable[8U] = {0, 0, 0, 0, 1, 2, 3, 4};
 /**
   * @brief  Setup the microcontroller system
   *         Initialize the Embedded Flash Interface, the PLL and update the 
-  *         SystemFrequency variable.
+  *         SystemCoreClock variable.
   * @param  None
   * @retval None
   */
@@ -174,10 +174,18 @@ void SystemInit (void)
 {
     RCC->CR |= RCC_CR_HSION;          // Включить HSI
     while (!(RCC->CR & RCC_CR_HSIRDY));  // Ждать готовности HSI
-    RCC->CFGR &= ~RCC_CFGR_HPRE;      // Сброс AHB prescaler (HCLK = SYSCLK)
-    RCC->CFGR &= ~RCC_CFGR_PLLSRC;    // Отключить PLL (использовать только HSI)
-    RCC->CFGR &= ~RCC_CFGR_PLLMULL;   // Сброс множителя PLL
+
+    RCC->CFGR &= ~RCC_CFGR_PLLSRC;    // PLL source = HSI / 2 (4 МГц)
+    RCC->CFGR &= ~RCC_CFGR_PLLMULL;   // Сброс множителя PLL (x2)
     RCC->CR &= ~RCC_CR_PLLON;         // Выключить PLL
+    while (RCC->CR & RCC_CR_PLLRDY);  // Ждать отключения PLL
+
+    RCC->CFGR &= ~RCC_CFGR_HPRE;      // AHB prescaler = 1 (HCLK = SYSCLK = 8 МГц)
+    RCC->CFGR &= ~RCC_CFGR_PPRE1;     // APB1 prescaler = 1 (PCLK1 = HCLK = 8 МГц)
+    RCC->CFGR &= ~RCC_CFGR_PPRE2;     // APB2 prescaler = 1 (PCLK2 = HCLK = 8 МГц)
+    RCC->CFGR &= ~RCC_CFGR_SW;        // SYSCLK = HSI
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);  // Ждать переключения на HSI
+
 #if defined(USER_VECT_TAB_ADDRESS)
     SCB->VTOR = VECT_TAB_BASE_ADDRESS | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
 #endif /* USER_VECT_TAB_ADDRESS */
@@ -307,8 +315,8 @@ void SystemCoreClockUpdate (void)
         else
         {/* PLL2 clock selected as PREDIV1 clock entry */
           /* Get PREDIV2 division factor and PLL2 multiplication factor */
-          prediv2factor = ((RCC->CFGR2 & RCC_CFGR2_PREDIV2) >> 4) + 1;
-          pll2mull = ((RCC->CFGR2 & RCC_CFGR2_PLL2MUL) >> 8 ) + 2; 
+          prediv2factor = ((RCC->CFGR2 & RCC_CFGR2_PREDIV2) >> 4U) + 1U;
+          pll2mull = ((RCC->CFGR2 & RCC_CFGR2_PLL2MUL) >> 8U) + 2U; 
           SystemCoreClock = (((HSE_VALUE / prediv2factor) * pll2mull) / prediv1factor) * pllmull;                         
         }
       }
