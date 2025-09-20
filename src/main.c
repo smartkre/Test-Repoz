@@ -1,56 +1,43 @@
 #include "stm32f1xx.h"
 
-#define LED_PIN   (1U << 13) // PC13
-#define TEST_PIN  (1U << 0)  // PB0
-
-void GPIO_Init(void) {
-    // Включаем тактирование GPIOB и GPIOC, а также AFIO
-    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN | RCC_APB2ENR_AFIOEN;
-
-    // PB0 -> альт.функция push-pull (TIM3_CH3)
-    GPIOB->CRL &= ~(0xF << (0 * 4));
-    GPIOB->CRL |= (0xB << (0 * 4));  // 0xB = 1011 (AF Push-Pull, 50 MHz)
-
-    // PC13 -> выход push-pull 2 MHz
-    GPIOC->CRH &= ~(0xF << ((13 - 8) * 4));
-    GPIOC->CRH |= (0x2 << ((13 - 8) * 4));
-}
-
-void TIM3_Init(void) {
-    // Включаем тактирование TIM3
-    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
-
-    // Настраиваем таймер: делитель и период
-    // Если частота APB1 = 36 MHz (типично для F103):
-    // PSC = 35 -> счётчик тикает на 1 MHz
-    TIM3->PSC = 35;
-    TIM3->ARR = 1;   // период = 2 тика -> 500 кГц (меандр на выходе)
-    TIM3->CCR3 = 1;  // 50% скважность
-
-    // Режим PWM на CH3
-    TIM3->CCMR2 &= ~TIM_CCMR2_OC3M;
-    TIM3->CCMR2 |= (0x6 << TIM_CCMR2_OC3M_Pos); // Toggle mode
-    TIM3->CCER |= TIM_CCER_CC3E;
-
-    // Запуск таймера
-    TIM3->CR1 |= TIM_CR1_CEN;
-}
-
-void delay_ms(uint32_t ms) {
-    for (volatile uint32_t i = 0; i < ms * 8000; i++) {
+// Простая задержка в цикле
+static void delay_ms(uint32_t ms) {
+    for (uint32_t i = 0; i < ms * 8000; i++) {
         __asm__("nop");
     }
 }
 
 int main(void) {
-    GPIO_Init();
-    TIM3_Init();
+    // Включаем тактирование GPIOB и GPIOC
+    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
+
+    // PB0 - выход push-pull, 50 МГц
+    GPIOB->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
+    GPIOB->CRL |= GPIO_CRL_MODE0_1 | GPIO_CRL_MODE0_0; // 50 МГц, general purpose push-pull
+
+    // PC13 - выход push-pull, 2 МГц (светодиод)
+    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
+    GPIOC->CRH |= GPIO_CRH_MODE13_1; // 2 МГц, push-pull
+
+    // Настроим SysTick для точного тайминга
+    SysTick->LOAD = 8000000 / 1000 - 1; // 1 мс при 8 МГц
+    SysTick->VAL = 0;
+    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
 
     while (1) {
-        // Мигаем LED на PC13 (10 Гц)
-        GPIOC->BRR = LED_PIN;   // Вкл
-        delay_ms(50);
-        GPIOC->BSRR = LED_PIN;  // Выкл
-        delay_ms(50);
+        // ====== Генерация тестового сигнала на PB0 ======
+        // Просто делаем делитель вручную: 8 МГц / 8 = 1 МГц
+        for (int i = 0; i < 4; i++) {
+            GPIOB->BSRR = GPIO_BSRR_BS0;   // PB0 = 1
+            __asm__("nop"); __asm__("nop"); __asm__("nop"); __asm__("nop");
+            GPIOB->BSRR = GPIO_BSRR_BR0;   // PB0 = 0
+            __asm__("nop"); __asm__("nop"); __asm__("nop"); __asm__("nop");
+        }
+
+        // ====== Мигание светодиодом PC13 ======
+        GPIOC->BSRR = GPIO_BSRR_BR13; // LED ON
+        delay_ms(100);                // 100 мс
+        GPIOC->BSRR = GPIO_BSRR_BS13; // LED OFF
+        delay_ms(100);                // 100 мс
     }
 }
