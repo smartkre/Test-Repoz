@@ -66,7 +66,7 @@ void TIM2_Init(uint32_t frequency) {
     if (frequency > 8000000) {
         RCC->CFGR &= ~RCC_CFGR_PLLMULL;
         RCC->CFGR |= RCC_CFGR_PLLMULL9;  // Умножение на 9 (8 МГц * 9 = 72 МГц)
-        RCC->CFGR |= RCC_CFGR_PLLSRC_HSE;  // Источник PLL — HSE
+        RCC->CFGR |= (1 << 16);          // Источник PLL — HSE (бит 16 = 1)
         RCC->CR |= RCC_CR_PLLON;
         while (!(RCC->CR & RCC_CR_PLLRDY));
         RCC->CFGR &= ~RCC_CFGR_SW;
