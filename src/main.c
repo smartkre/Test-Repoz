@@ -41,8 +41,9 @@ void System_Init(void) {
     FLASH->ACR &= ~FLASH_ACR_LATENCY;
     FLASH->ACR |= FLASH_ACR_LATENCY_2;
 
-    // Включение MCO (HCLK на PA8)
-    RCC->CFGR |= RCC_CFGR_MCO_PLLCLK;  // Вывод PLLCLK (72 МГц) на MCO
+    // Настройка MCO (HCLK на PA8)
+    RCC->CFGR &= ~RCC_CFGR_MCO;  // Сброс текущего MCO
+    RCC->CFGR |= RCC_CFGR_MCO_SYSCLK;  // Вывод HCLK (72 МГц) на MCO
     GPIOA->CRH &= ~(0xF << ((8 - 8) * 4));  // Очищаем PA8
     GPIOA->CRH |= (0xB << ((8 - 8) * 4));   // AF push-pull 10MHz
 
