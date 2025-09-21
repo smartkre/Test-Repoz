@@ -2,25 +2,25 @@
 
 // Определение выводов согласно вашему переназначению
 #define HVSP_RST_PORT GPIOB
-#define HVSP_RST_PIN  GPIO_PIN_0
+#define HVSP_RST_PIN  (1 << 0)  // PB0
 
 #define HVSP_SCI_PORT GPIOB
-#define HVSP_SCI_PIN  GPIO_PIN_4
+#define HVSP_SCI_PIN  (1 << 4)  // PB4
 
 #define HVSP_SDO_PORT GPIOB
-#define HVSP_SDO_PIN  GPIO_PIN_1
+#define HVSP_SDO_PIN  (1 << 1)  // PB1
 
 #define HVSP_SII_PORT GPIOA
-#define HVSP_SII_PIN  GPIO_PIN_6
+#define HVSP_SII_PIN  (1 << 6)  // PA6
 
 #define HVSP_SDI_PORT GPIOA
-#define HVSP_SDI_PIN  GPIO_PIN_7
+#define HVSP_SDI_PIN  (1 << 7)  // PA7
 
 #define BUTTON_PORT GPIOA
-#define BUTTON_PIN  GPIO_PIN_9
+#define BUTTON_PIN  (1 << 9)    // PA9
 
 #define LED_PORT GPIOC
-#define LED_PIN  GPIO_PIN_13
+#define LED_PIN  (1 << 13)      // PC13
 
 // Определения для фьюзов и сигнатур
 #define HFUSE 0x747C
@@ -130,7 +130,7 @@ void GPIO_Init(void) {
     // Настройка кнопки (PA9) - вход с подтяжкой к VCC
     GPIOA->CRH &= ~(GPIO_CRH_MODE9 | GPIO_CRH_CNF9);
     GPIOA->CRH |= GPIO_CRH_CNF9_1;    // Input with pull-up/pull-down
-    GPIOA->ODR |= BUTTON_PIN;          // Pull-up
+    GPIOA->BSRR = BUTTON_PIN;          // Pull-up
     
     // Настройка HVSP выводов - изначально все на выход
     // RST (PB0)
@@ -207,7 +207,7 @@ void HVSP_Enter(void) {
     // Переключаем SDO на вход
     GPIOB->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
     GPIOB->CRL |= GPIO_CRL_CNF1_0; // Input with pull-up/pull-down
-    GPIOB->ODR |= HVSP_SDO_PIN;     // Pull-up
+    GPIOB->BSRR = HVSP_SDO_PIN;     // Pull-up
     
     Delay_us(300);
 }
@@ -303,6 +303,9 @@ void HVSP_ReadFuses(void) {
     HVSP_ShiftOut(0x04, 0x4C);
     HVSP_ShiftOut(0x00, 0x6A);
     val = HVSP_ShiftOut(0x00, 0x6E);
+    
+    // Подавляем предупреждение о неиспользуемой переменной
+    (void)val;
 }
 
 // Простые функции задержки
