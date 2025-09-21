@@ -19,28 +19,31 @@
 #define LED_PORT GPIOC
 #define LED_PIN  (1 << 13)      // PC13
 
-void Delay(uint32_t count) {
-    for(volatile uint32_t i = 0; i < count; i++);
+void System_Init(void) {
+    // Включение HSI
+    RCC->CR |= RCC_CR_HSION;
+    while ((RCC->CR & RCC_CR_HSIRDY) == 0);
+    
+    // Включение тактирования портов и таймеров
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 }
 
 void GPIO_Init(void) {
-    // Включение тактирования портов
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
-    Delay(1000);
-    
     // Настройка LED (PC13)
     GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
     GPIOC->CRH |= GPIO_CRH_MODE13_0; // Output mode, 10 MHz
     GPIOC->CRH |= GPIO_CRH_CNF13_0;  // Open-drain
     
-    // Настройка HVSP выводов
+    // Настройка SCI (PB4) как AF Push-Pull для TIM3
+    GPIOB->CRL &= ~(GPIO_CRL_MODE4 | GPIO_CRL_CNF4);
+    GPIOB->CRL |= GPIO_CRL_MODE4_1;    // Output mode, 2 MHz
+    GPIOB->CRL |= GPIO_CRL_CNF4_1;     // Alternate function output Push-pull
+    
+    // Настройка остальных HVSP выводов как обычных выходов
     // RST (PB0)
     GPIOB->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
     GPIOB->CRL |= GPIO_CRL_MODE0;     // Output mode, 50 MHz
-    
-    // SCI (PB4)
-    GPIOB->CRL &= ~(GPIO_CRL_MODE4 | GPIO_CRL_CNF4);
-    GPIOB->CRL |= GPIO_CRL_MODE4;     // Output mode, 50 MHz
     
     // SDO (PB1)
     GPIOB->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
@@ -56,14 +59,41 @@ void GPIO_Init(void) {
     
     // Изначально все линии в LOW
     HVSP_RST_PORT->BRR = HVSP_RST_PIN;
-    HVSP_SCI_PORT->BRR = HVSP_SCI_PIN;
     HVSP_SII_PORT->BRR = HVSP_SII_PIN;
     HVSP_SDI_PORT->BRR = HVSP_SDI_PIN;
     HVSP_SDO_PORT->BRR = HVSP_SDO_PIN;
 }
 
+void TIM3_Init(void) {
+    // Остановка таймера
+    TIM3->CR1 &= ~TIM_CR1_CEN;
+    
+    // Настройка таймера для генерации 1 MHz на CH1 (PB4)
+    TIM3->PSC = 7;          // Делитель: 8 MHz / (7 + 1) = 1 MHz
+    TIM3->ARR = 1;          // Период: 2 такта (1 MHz / 2 = 500 kHz)
+    TIM3->CCR1 = 1;         // Скважность 50% (1/2)
+    
+    // Настройка канала 1 в PWM mode 1
+    TIM3->CCMR1 &= ~TIM_CCMR1_OC1M;
+    TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2; // PWM mode 1
+    TIM3->CCMR1 |= TIM_CCMR1_OC1PE; // Enable preload
+    
+    // Включение канала 1
+    TIM3->CCER |= TIM_CCER_CC1E;
+    
+    // Включение таймера
+    TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+// Простая задержка
+void Delay(uint32_t count) {
+    for(volatile uint32_t i = 0; i < count; i++);
+}
+
 int main(void) {
+    System_Init();
     GPIO_Init();
+    TIM3_Init();
     
     // Мигаем 3 раза для индикации старта
     for(int i = 0; i < 3; i++) {
@@ -74,41 +104,43 @@ int main(void) {
     }
     
     uint8_t test_phase = 0;
+    uint32_t phase_counter = 0;
     
     while(1) {
         // Поочередно тестируем каждый пин
         switch(test_phase) {
-            case 0: // Тест SCI (PB4) - 1 kHz
-                HVSP_SCI_PORT->ODR ^= HVSP_SCI_PIN;
-                Delay(500); // ~1 kHz
+            case 0: // Тест SCI (PB4) - уже работает от TIM3 (500 kHz PWM)
+                // Дополнительно включаем RST (PB0)
+                HVSP_RST_PORT->BSRR = HVSP_RST_PIN;
                 break;
                 
-            case 1: // Тест SII (PA6) - 500 Hz
+            case 1: // Тест SII (PA6) - ручное переключение 1 Hz
+                HVSP_RST_PORT->BRR = HVSP_RST_PIN;
                 HVSP_SII_PORT->ODR ^= HVSP_SII_PIN;
-                Delay(1000);
+                Delay(500000);
                 break;
                 
-            case 2: // Тест SDI (PA7) - 250 Hz  
+            case 2: // Тест SDI (PA7) - ручное переключение 2 Hz
                 HVSP_SDI_PORT->ODR ^= HVSP_SDI_PIN;
-                Delay(2000);
+                Delay(250000);
                 break;
                 
-            case 3: // Тест RST (PB0) - 100 Hz
-                HVSP_RST_PORT->ODR ^= HVSP_RST_PIN;
-                Delay(5000);
-                break;
-                
-            case 4: // Тест SDO (PB1) - 200 Hz
+            case 3: // Тест SDO (PB1) - ручное переключение 4 Hz
                 HVSP_SDO_PORT->ODR ^= HVSP_SDO_PIN;
-                Delay(2500);
+                Delay(125000);
                 break;
         }
         
-        // Переключаем фазу каждые 2 секунды
-        static uint32_t counter = 0;
-        if(counter++ > 2000000) {
-            counter = 0;
-            test_phase = (test_phase + 1) % 5;
+        // Переключаем фазу каждые 5 секунд
+        if(phase_counter++ > 5000000) {
+            phase_counter = 0;
+            test_phase = (test_phase + 1) % 4;
+            
+            // Выключаем все перед сменой фазы
+            HVSP_RST_PORT->BRR = HVSP_RST_PIN;
+            HVSP_SII_PORT->BRR = HVSP_SII_PIN;
+            HVSP_SDI_PORT->BRR = HVSP_SDI_PIN;
+            HVSP_SDO_PORT->BRR = HVSP_SDO_PIN;
             
             // Мигаем LED при смене фазы
             LED_PORT->BRR = LED_PIN;
