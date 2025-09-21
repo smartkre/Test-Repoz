@@ -6,16 +6,21 @@ void System_Init(void) {
     RCC->CR |= RCC_CR_HSION;
     while (!(RCC->CR & RCC_CR_HSIRDY));
 
-    // Отключение LSE
+    // Включение Backup Domain для LSE
     RCC->APB1ENR |= RCC_APB1ENR_BKPEN | RCC_APB1ENR_PWREN;
+    // Отключение LSE (32.768 кГц)
     RCC->BDCR &= ~RCC_BDCR_LSEON;
     while (RCC->BDCR & RCC_BDCR_LSERDY);
 
-    // Включение HSE
+    // Включение HSE (внешний кварц 8 МГц)
     RCC->CR |= RCC_CR_HSEON;
     while (!(RCC->CR & RCC_CR_HSERDY));
 
-    // Переключение на HSE
+    // Отключение PLL
+    RCC->CR &= ~RCC_CR_PLLON;
+    while (RCC->CR & RCC_CR_PLLRDY);
+
+    // Переключение SYSCLK на HSE
     RCC->CFGR &= ~RCC_CFGR_SW;
     RCC->CFGR |= RCC_CFGR_SW_HSE;
     while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
@@ -23,58 +28,36 @@ void System_Init(void) {
     // Сброс делителей
     RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
 
-    // Flash Latency для 8 МГц
+    // Настройка Flash Latency (0WS для 0-24 МГц)
     FLASH->ACR &= ~FLASH_ACR_LATENCY;
     FLASH->ACR |= FLASH_ACR_LATENCY_0;
 
-    // Настройка MCO (HSE на PA8)
-    RCC->CFGR &= ~RCC_CFGR_MCO;  // Сброс текущего MCO
-    RCC->CFGR |= RCC_CFGR_MCO_HSE;  // Вывод HSE (8 МГц) на MCO
-    GPIOA->CRH &= ~(0xF << ((8 - 8) * 4));  // Очищаем PA8
-    GPIOA->CRH |= (0xB << ((8 - 8) * 4));   // AF push-pull 10MHz
-
-    // Отключение JTAG (оставляем только SWD)
-    AFIO->MAPR &= ~AFIO_MAPR_SWJ_CFG;
-    AFIO->MAPR |= 0x02;  // JTAG отключен, SWD активен
-
-    // Включение тактирования GPIOA, AFIO и TIM2
+    // Включаем тактирование GPIOA, AFIO и TIM2
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 }
 
-// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3) с частотой 1 МГц ---
+// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3, 1 МГц, 50%) ---
 void TIM2_Init(void) {
     // Настройка PA2 как AF push-pull (для TIM2_CH3)
-    GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2
+    GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2 (сдвиг 2)
     GPIOA->CRL |= (0xB << (2 * 4));   // AF push-pull 10MHz
 
-    // PCLK1 = 8 МГц
-    uint32_t pclk1 = 8000000;
-    uint32_t target_freq = 1000000;  // Целевая частота 1 МГц
-    uint32_t prescaler = 0;
-    uint32_t period = (pclk1 / target_freq) - 1;
-
-    if (period < 1) period = 1;
-    if (period > 0xFFFF) {
-        prescaler = (period / 0xFFFF) + 1;
-        period = (pclk1 / (prescaler + 1) / target_freq) - 1;
-        if (period < 1) period = 1;
-    }
-
-    TIM2->PSC = prescaler;
-    TIM2->ARR = period;
-    TIM2->CCR3 = period / 2;  // 50% скважность
-    TIM2->CCMR2 = (TIM2->CCMR2 & ~TIM_CCMR2_OC3M) | TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2;
-    TIM2->CCMR2 |= TIM_CCMR2_OC3PE;
-    TIM2->CCER |= TIM_CCER_CC3E;
-    TIM2->CR1 |= TIM_CR1_CEN;
+    // Настройка TIM2
+    TIM2->PSC = 0;  // Без деления (частота таймера = 8 МГц)
+    TIM2->ARR = 7;  // Период = 8 / 8 МГц = 1 МГц
+    TIM2->CCR3 = 4;  // Скважность 50% (4 / 8 = 0.5)
+    TIM2->CCMR2 = (TIM2->CCMR2 & ~TIM_CCMR2_OC3M) | TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2;  // PWM Mode 1
+    TIM2->CCMR2 |= TIM_CCMR2_OC3PE;  // Включение предзагрузки
+    TIM2->CCER |= TIM_CCER_CC3E;  // Включение канала 3
+    TIM2->CR1 |= TIM_CR1_CEN;  // Включить таймер
 }
 
 int main(void) {
     System_Init();
-    TIM2_Init();
+    TIM2_Init();  // Генерация ШИМ на PA2
 
     while (1) {
-        // Бесконечный цикл
+        // Ничего не делать, ШИМ работает автоматически
     }
 }
