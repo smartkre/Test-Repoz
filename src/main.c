@@ -33,9 +33,9 @@ void System_Init(void) {
     GPIOA->CRH &= ~(0xF << ((8 - 8) * 4));  // Очищаем PA8
     GPIOA->CRH |= (0xB << ((8 - 8) * 4));   // AF push-pull 10MHz
 
-    // Отключение JTAG (освобождаем PA8, PA2)
+    // Отключение JTAG (оставляем только SWD)
     AFIO->MAPR &= ~AFIO_MAPR_SWJ_CFG;
-    AFIO->MAPR |= AFIO_MAPR_SWJ_CFG_NO_JTAG;
+    AFIO->MAPR |= 0x02;  // JTAG отключен, SWD активен
 
     // Включение тактирования GPIOA, AFIO и TIM2
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
