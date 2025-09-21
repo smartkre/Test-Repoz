@@ -4,25 +4,26 @@
 void System_Init(void) {
     // Включение HSI для стабильного старта
     RCC->CR |= RCC_CR_HSION;
-    while (!(RCC->CR & RCC_CR_HSIRDY));  // Ждать готовности HSI
+    while (!(RCC->CR & RCC_CR_HSIRDY));
 
+    // Включение Backup Domain для LSE
+    RCC->APB1ENR |= RCC_APB1ENR_BKPEN | RCC_APB1ENR_PWREN;
     // Отключение LSE (32.768 кГц)
-    RCC->APB1ENR |= RCC_APB1ENR_BKPEN | RCC_APB1ENR_PWREN;  // Включить Backup Domain
     RCC->BDCR &= ~RCC_BDCR_LSEON;
-    while (RCC->BDCR & RCC_BDCR_LSERDY);  // Ждать отключения LSE
+    while (RCC->BDCR & RCC_BDCR_LSERDY);
 
     // Включение HSE (внешний кварц 8 МГц)
     RCC->CR |= RCC_CR_HSEON;
-    while (!(RCC->CR & RCC_CR_HSERDY));  // Ждать готовности HSE
+    while (!(RCC->CR & RCC_CR_HSERDY));
 
     // Отключение PLL
     RCC->CR &= ~RCC_CR_PLLON;
-    while (RCC->CR & RCC_CR_PLLRDY);  // Ждать отключения PLL
+    while (RCC->CR & RCC_CR_PLLRDY);
 
     // Переключение SYSCLK на HSE
     RCC->CFGR &= ~RCC_CFGR_SW;
     RCC->CFGR |= RCC_CFGR_SW_HSE;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);  // Ждать переключения
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
 
     // Сброс делителей
     RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
@@ -31,16 +32,16 @@ void System_Init(void) {
     FLASH->ACR &= ~FLASH_ACR_LATENCY;
     FLASH->ACR |= FLASH_ACR_LATENCY_0;
 
-    // Включаем тактирование GPIOB и TIM2
-    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
+    // Включаем тактирование GPIOA, AFIO и TIM2
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 }
 
-// --- Настройка TIM2 для ШИМ на PB0 (1 МГц, 50%) ---
+// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3, 1 МГц, 50%) ---
 void TIM2_Init(void) {
-    // Настройка PB0 как AF push-pull (для TIM2_CH3)
-    GPIOB->CRL &= ~(0xF << 0);
-    GPIOB->CRL |= (0xB << 0);  // AF push-pull 10MHz
+    // Настройка PA2 как AF push-pull (для TIM2_CH3)
+    GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2 (сдвиг 2)
+    GPIOA->CRL |= (0xB << (2 * 4));   // AF push-pull 10MHz
 
     // Настройка TIM2
     TIM2->PSC = 0;  // Без деления (частота таймера = 8 МГц)
@@ -54,9 +55,8 @@ void TIM2_Init(void) {
 
 int main(void) {
     System_Init();
-    TIM2_Init();  // Генерация ШИМ на PB0
+    TIM2_Init();  // Генерация ШИМ на PA2
 
-    // Бесконечный цикл (нет нужды в мигании или кнопках)
     while (1) {
         // Ничего не делать, ШИМ работает автоматически
     }
