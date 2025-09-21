@@ -1,55 +1,46 @@
 #include "stm32f1xx.h"
 
-void clock_init(void) {
-    // 1. Включаем HSI
-    RCC->CR |= RCC_CR_HSION;
-    while (!(RCC->CR & RCC_CR_HSIRDY));
+#define TEST_PIN     (1U << 0)  // PB0 (PA0 для TIM2_CH1)
 
-    // 2. Отключаем PLL
-    RCC->CR &= ~RCC_CR_PLLON;
-    while (RCC->CR & RCC_CR_PLLRDY);
-
-    // 3. Сбрасываем настройки делителей
-    RCC->CFGR = 0x00000000;
-
-    // 4. Выбираем HSI как источник системной частоты
-    RCC->CFGR |= RCC_CFGR_SW_HSI;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);
+// --- Инициализация тактирования с HSE ---
+void System_Init(void) {
+    RCC->CR |= RCC_CR_HSEON;
+    while (!(RCC->CR & RCC_CR_HSERDY));
+    RCC->CFGR &= ~RCC_CFGR_SW;
+    RCC->CFGR |= RCC_CFGR_SW_HSE;
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
+    RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
+    FLASH->ACR |= FLASH_ACR_LATENCY_0;
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB1ENR_TIM2EN;
+    GPIOA->CRL &= ~(0xF << 0);  // PA0 как выход альтернативной функции
+    GPIOA->CRL |= (0xB << 0);   // AF push-pull 10MHz
 }
 
+// --- Задержка ---
 void delay_ms(uint32_t ms) {
-    // При SYSCLK = 8 МГц одна итерация ~1 мкс (цикл + оптимизация)
-    // Подогнано для более точного результата
-    for (uint32_t i = 0; i < ms * 800; i++) {
-        __asm__("nop");
-    }
+    for (volatile uint32_t t = 0; t < ms; t++)
+        for (volatile uint32_t i = 0; i < 8000; i++) __asm__("nop");
+}
+
+// --- Настройка TIM2 для ШИМ ---
+void TIM2_Init(void) {
+    TIM2->PSC = 9;           // Делитель 10
+    TIM2->ARR = 159;         // Период для ~5 кГц
+    TIM2->CCR1 = 80;         // Скважность ~50%
+    TIM2->CCMR1 |= TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;  // PWM Mode 1
+    TIM2->CCER |= TIM_CCER_CC1E;  // Включение канала 1
+    TIM2->CR1 |= TIM_CR1_CEN;     // Включение таймера
 }
 
 int main(void) {
-    clock_init();
-
-    // Включаем тактирование портов
-    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN | RCC_APB2ENR_IOPBEN;
-
-    // PC13 как выход push-pull (2 МГц)
-    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
-    GPIOC->CRH |= GPIO_CRH_MODE13_1;
-
-    // PB0 как выход push-pull (50 МГц)
-    GPIOB->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
-    GPIOB->CRL |= GPIO_CRL_MODE0_1 | GPIO_CRL_MODE0_0;
+    System_Init();
+    TIM2_Init();
 
     while (1) {
-        // ---- PB0: генерация ~1 МГц ----
-        GPIOB->ODR ^= (1 << 0);   // toggle PB0
-        for (volatile int i = 0; i < 4; i++); // минимальная задержка
-
-        // ---- PC13: мигание 10 Гц ----
-        static uint32_t counter = 0;
-        counter++;
-        if (counter >= 40000) {   // при SYSCLK=8 МГц примерно 100 мс
-            GPIOC->ODR ^= (1 << 13);
-            counter = 0;
+        // Динамическая смена скважности
+        for (uint32_t i = 100; i <= 300; i += 100) {
+            TIM2->CCR1 = i;
+            delay_ms(5000);  // 5 секунд
         }
     }
 }
