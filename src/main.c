@@ -47,7 +47,7 @@ void System_Init(void) {
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 }
 
-// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3, 10 МГц, 50%) ---
+// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3, 7 МГц, 50%) ---
 void TIM2_Init(void) {
     // Настройка PA2 как AF push-pull (для TIM2_CH3)
     GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2 (сдвиг 2)
@@ -56,7 +56,7 @@ void TIM2_Init(void) {
     // Настройка TIM2
     // PCLK1 = 36 МГц (HCLK / 2 при 72 МГц)
     uint32_t pclk1 = 36000000;
-    uint32_t target_freq = 10000000;  // Целевая частота 10 МГц
+    uint32_t target_freq = 7000000;  // Целевая частота 7 МГц
     uint32_t prescaler = 0;
     uint32_t period = (pclk1 / target_freq) - 1;
 
