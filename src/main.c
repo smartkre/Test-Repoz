@@ -53,41 +53,47 @@ void TIM2_Init(uint32_t frequency, uint32_t hclk) {
     GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2
     GPIOA->CRL |= (0xB << (2 * 4));   // AF push-pull 10MHz
 
-    // Вычисление PSC и ARR для заданной частоты
+    // Учет PCLK1 (APB1) — делится на 2, если HCLK > 36 МГц
+    uint32_t pclk1 = (hclk > 36000000) ? (hclk / 2) : hclk;
     uint32_t prescaler = 0;
-    uint32_t period = (hclk / frequency) - 1;
+    uint32_t period = (pclk1 / frequency) - 1;
 
+    if (period < 1) period = 1;  // Минимальный период = 1
     if (period > 0xFFFF) {  // Если период выходит за пределы 16 бит
         prescaler = (period / 0xFFFF) + 1;
-        period = (hclk / (prescaler + 1) / frequency) - 1;
+        period = (pclk1 / (prescaler + 1) / frequency) - 1;
+        if (period < 1) period = 1;
     }
 
     // Настройка PLL для частот выше 8 МГц
     if (frequency > 8000000 && hclk == 8000000) {
         uint32_t pll_mul = (frequency * 2 / 8000000);  // Примерное умножение
-        if (pll_mul > 16) pll_mul = 16;  // Максимум PLLMULL = 16 (128 МГц недопустимо)
+        if (pll_mul > 9) pll_mul = 9;  // Максимум 9x (72 МГц)
         RCC->CFGR &= ~RCC_CFGR_PLLMULL;
-        RCC->CFGR |= (pll_mul - 2) << 18;  // Установка умножения (2-16)
+        RCC->CFGR |= (pll_mul - 2) << 18;  // Установка умножения (2-9)
         RCC->CFGR |= (1 << 16);            // Источник PLL — HSE
         RCC->CR |= RCC_CR_PLLON;
         while (!(RCC->CR & RCC_CR_PLLRDY));
         RCC->CFGR &= ~RCC_CFGR_SW;
         RCC->CFGR |= RCC_CFGR_SW_PLL;
         while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
-        hclk = 8000000 * pll_mul;  // Обновляем HCLK
-        if (hclk > 72000000) hclk = 72000000;  // Ограничение 72 МГц
+        hclk = 8000000 * pll_mul;
+        if (hclk > 72000000) hclk = 72000000;
         // Обновление Flash Latency
         if (hclk > 48000000) FLASH->ACR |= FLASH_ACR_LATENCY_2;
         else if (hclk > 24000000) FLASH->ACR |= FLASH_ACR_LATENCY_1;
         else FLASH->ACR |= FLASH_ACR_LATENCY_0;
+        pclk1 = (hclk > 36000000) ? (hclk / 2) : hclk;
     }
 
-    // Пересчет для новой частоты с учетом HCLK
+    // Пересчет для новой частоты с учетом PCLK1
     prescaler = 0;
-    period = (hclk / frequency) - 1;
+    period = (pclk1 / frequency) - 1;
+    if (period < 1) period = 1;
     if (period > 0xFFFF) {
         prescaler = (period / 0xFFFF) + 1;
-        period = (hclk / (prescaler + 1) / frequency) - 1;
+        period = (pclk1 / (prescaler + 1) / frequency) - 1;
+        if (period < 1) period = 1;
     }
 
     TIM2->PSC = prescaler;
@@ -110,7 +116,7 @@ int main(void) {
         // Обновляем hclk только если PLL активен
         if (freq > 8000000) {
             uint32_t pll_mul = (freq * 2 / 8000000);
-            if (pll_mul > 16) pll_mul = 16;
+            if (pll_mul > 9) pll_mul = 9;
             hclk = 8000000 * pll_mul;
             if (hclk > 72000000) hclk = 72000000;
         }
