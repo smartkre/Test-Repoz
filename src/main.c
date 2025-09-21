@@ -15,52 +15,42 @@ void System_Init(void) {
     RCC->CR |= RCC_CR_HSEON;
     while (!(RCC->CR & RCC_CR_HSERDY));
 
-    // Отключение PLL
-    RCC->CR &= ~RCC_CR_PLLON;
-    while (RCC->CR & RCC_CR_PLLRDY);
-
     // Переключение на HSE
     RCC->CFGR &= ~RCC_CFGR_SW;
     RCC->CFGR |= RCC_CFGR_SW_HSE;
     while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
 
-    // Настройка PLL (8 МГц * 9 = 72 МГц)
-    RCC->CFGR &= ~RCC_CFGR_PLLMULL;
-    RCC->CFGR |= RCC_CFGR_PLLMULL9;
-    RCC->CFGR |= (1 << 16);  // Источник PLL — HSE
-    RCC->CR |= RCC_CR_PLLON;
-    while (!(RCC->CR & RCC_CR_PLLRDY));
-    RCC->CFGR &= ~RCC_CFGR_SW;
-    RCC->CFGR |= RCC_CFGR_SW_PLL;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
-
     // Сброс делителей
     RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
 
-    // Flash Latency для 72 МГц
+    // Flash Latency для 8 МГц
     FLASH->ACR &= ~FLASH_ACR_LATENCY;
-    FLASH->ACR |= FLASH_ACR_LATENCY_2;
+    FLASH->ACR |= FLASH_ACR_LATENCY_0;
 
-    // Настройка MCO (HCLK на PA8)
+    // Настройка MCO (HSE на PA8)
     RCC->CFGR &= ~RCC_CFGR_MCO;  // Сброс текущего MCO
-    RCC->CFGR |= RCC_CFGR_MCO_SYSCLK;  // Вывод HCLK (72 МГц) на MCO
+    RCC->CFGR |= RCC_CFGR_MCO_HSE;  // Вывод HSE (8 МГц) на MCO
     GPIOA->CRH &= ~(0xF << ((8 - 8) * 4));  // Очищаем PA8
     GPIOA->CRH |= (0xB << ((8 - 8) * 4));   // AF push-pull 10MHz
+
+    // Отключение JTAG (освобождаем PA8, PA2)
+    AFIO->MAPR &= ~AFIO_MAPR_SWJ_CFG;
+    AFIO->MAPR |= AFIO_MAPR_SWJ_CFG_NO_JTAG;
 
     // Включение тактирования GPIOA, AFIO и TIM2
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 }
 
-// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3) с фиксированной частотой ~18 МГц ---
+// --- Настройка TIM2 для ШИМ на PA2 (TIM2_CH3) с частотой 1 МГц ---
 void TIM2_Init(void) {
     // Настройка PA2 как AF push-pull (для TIM2_CH3)
     GPIOA->CRL &= ~(0xF << (2 * 4));  // Очищаем PA2
     GPIOA->CRL |= (0xB << (2 * 4));   // AF push-pull 10MHz
 
-    // PCLK1 = 36 МГц (HCLK / 2)
-    uint32_t pclk1 = 36000000;
-    uint32_t target_freq = 18000000;  // Целевая частота 18 МГц
+    // PCLK1 = 8 МГц
+    uint32_t pclk1 = 8000000;
+    uint32_t target_freq = 1000000;  // Целевая частота 1 МГц
     uint32_t prescaler = 0;
     uint32_t period = (pclk1 / target_freq) - 1;
 
