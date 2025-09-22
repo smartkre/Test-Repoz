@@ -29,6 +29,7 @@
 #define EFUSE 0x666EU
 
 /* ========== Includes ========== */
+#define STM32F103x6
 #include "stm32f1xx.h"  /* CMSIS-SVD style defs (register names) */
 #include <stdint.h>
 
