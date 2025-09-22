@@ -12,39 +12,6 @@
 #define BUTTON_PIN 6    // PA6
 #define LED_PIN    13   // PC13
 
-// Базовые адреса портов
-#define GPIOA_BASE 0x40010800
-#define GPIOC_BASE 0x40011000
-#define RCC_BASE   0x40021000
-
-// Структуры для доступа к регистрам
-typedef struct {
-    volatile uint32_t CRL;
-    volatile uint32_t CRH;
-    volatile uint32_t IDR;
-    volatile uint32_t ODR;
-    volatile uint32_t BSRR;
-    volatile uint32_t BRR;
-    volatile uint32_t LCKR;
-} GPIO_TypeDef;
-
-typedef struct {
-    volatile uint32_t CR;
-    volatile uint32_t CFGR;
-    volatile uint32_t CIR;
-    volatile uint32_t APB2RSTR;
-    volatile uint32_t APB1RSTR;
-    volatile uint32_t AHBENR;
-    volatile uint32_t APB2ENR;
-    volatile uint32_t APB1ENR;
-    volatile uint32_t BDCR;
-    volatile uint32_t CSR;
-} RCC_TypeDef;
-
-#define GPIOA ((GPIO_TypeDef *) GPIOA_BASE)
-#define GPIOC ((GPIO_TypeDef *) GPIOC_BASE)
-#define RCC   ((RCC_TypeDef *) RCC_BASE)
-
 // Определения для фьюзов
 #define HFUSE  0x747C
 #define LFUSE  0x646C
@@ -67,17 +34,17 @@ void readFuses(void);
 uint16_t readSignature(void);
 uint8_t checkButton(void);
 
-// Функции для работы с GPIO
+// Функции для работы с GPIO (используем стандартные определения)
 void GPIO_SetBit(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin) {
-    GPIOx->BSRR = (1 << GPIO_Pin);
+    GPIOx->BSRR = GPIO_Pin;
 }
 
 void GPIO_ResetBit(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin) {
-    GPIOx->BRR = (1 << GPIO_Pin);
+    GPIOx->BRR = GPIO_Pin;
 }
 
 uint8_t GPIO_ReadInputDataBit(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin) {
-    return (GPIOx->IDR & (1 << GPIO_Pin)) ? 1 : 0;
+    return (GPIOx->IDR & GPIO_Pin) ? 1 : 0;
 }
 
 int main(void) {
@@ -91,27 +58,27 @@ int main(void) {
     // Основной цикл
     while(1) {
         // Мигание раз в секунду в режиме ожидания
-        GPIO_SetBit(GPIOC, LED_PIN);
+        GPIO_SetBit(GPIOC, GPIO_Pin_13);
         delay_ms(500);
-        GPIO_ResetBit(GPIOC, LED_PIN);
+        GPIO_ResetBit(GPIOC, GPIO_Pin_13);
         delay_ms(500);
         
         // Проверка нажатия кнопки
         if(checkButton()) {
             // Начало процедуры программирования
-            GPIO_ResetBit(GPIOA, SDI_PIN);
-            GPIO_ResetBit(GPIOA, SII_PIN);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_4);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_3);
             
             // Установка SDO как выхода
             GPIOA->CRL &= ~(0xF << (SDO_PIN * 4)); // Очистка битов конфигурации
             GPIOA->CRL |= (0x1 << (SDO_PIN * 4));  // Output, 10MHz, Push-pull
             
-            GPIO_ResetBit(GPIOA, SDO_PIN);
-            GPIO_SetBit(GPIOA, RST_PIN);   // 12V Off
-            GPIO_SetBit(GPIOA, VCC_PIN);   // VCC On
+            GPIO_ResetBit(GPIOA, GPIO_Pin_2);
+            GPIO_SetBit(GPIOA, GPIO_Pin_0);   // 12V Off
+            GPIO_SetBit(GPIOA, GPIO_Pin_5);   // VCC On
             
             delay_us(20);
-            GPIO_ResetBit(GPIOA, RST_PIN); // 12V On
+            GPIO_ResetBit(GPIOA, GPIO_Pin_0); // 12V On
             delay_us(10);
             
             // Возврат SDO как входа
@@ -136,9 +103,9 @@ int main(void) {
             }
             
             // Завершение
-            GPIO_ResetBit(GPIOA, SCI_PIN);
-            GPIO_ResetBit(GPIOA, VCC_PIN);
-            GPIO_SetBit(GPIOA, RST_PIN);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_1);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_5);
+            GPIO_SetBit(GPIOA, GPIO_Pin_0);
             
             delay_ms(1000);
         }
@@ -148,7 +115,7 @@ int main(void) {
 // Инициализация GPIO
 void GPIO_Init(void) {
     // Включение тактирования портов A и C
-    RCC->APB2ENR |= (1 << 2) | (1 << 4); // GPIOA и GPIOC
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPCEN;
     
     // Настройка выходов PA0-PA5
     for(int i = 0; i <= 5; i++) {
@@ -163,15 +130,15 @@ void GPIO_Init(void) {
     // Настройка кнопки PA6 с подтяжкой к VCC
     GPIOA->CRL &= ~(0xF << (BUTTON_PIN * 4));
     GPIOA->CRL |= (0x8 << (BUTTON_PIN * 4));  // Input with pull-up/pull-down
-    GPIOA->ODR |= (1 << BUTTON_PIN);          // Pull-up
+    GPIOA->ODR |= GPIO_Pin_6;                 // Pull-up
     
     // Настройка SDO как входа по умолчанию
     GPIOA->CRL &= ~(0xF << (SDO_PIN * 4));
     GPIOA->CRL |= (0x4 << (SDO_PIN * 4));  // Input, floating
     
     // Установка начальных состояний
-    GPIO_SetBit(GPIOA, RST_PIN);
-    GPIO_ResetBit(GPIOA, VCC_PIN);
+    GPIO_SetBit(GPIOA, GPIO_Pin_0);
+    GPIO_ResetBit(GPIOA, GPIO_Pin_5);
 }
 
 // Функция моргания светодиодом
@@ -179,19 +146,19 @@ void blinkLED(uint8_t times, uint16_t duration) {
     uint16_t delay_time = duration / (times * 2);
     
     for(uint8_t i = 0; i < times; i++) {
-        GPIO_SetBit(GPIOC, LED_PIN);
+        GPIO_SetBit(GPIOC, GPIO_Pin_13);
         delay_ms(delay_time);
-        GPIO_ResetBit(GPIOC, LED_PIN);
+        GPIO_ResetBit(GPIOC, GPIO_Pin_13);
         delay_ms(delay_time);
     }
 }
 
 // Проверка нажатия кнопки с антидребезгом
 uint8_t checkButton(void) {
-    if(GPIO_ReadInputDataBit(GPIOA, BUTTON_PIN) == 0) {
+    if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_6) == 0) {
         delay_ms(50);  // Антидребезг
-        if(GPIO_ReadInputDataBit(GPIOA, BUTTON_PIN) == 0) {
-            while(GPIO_ReadInputDataBit(GPIOA, BUTTON_PIN) == 0); // Ожидание отпускания
+        if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_6) == 0) {
+            while(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_6) == 0); // Ожидание отпускания
             return 1;
         }
     }
@@ -203,29 +170,29 @@ uint8_t shiftOut(uint8_t val1, uint8_t val2) {
     uint16_t inBits = 0;
     
     // Ожидание готовности SDO
-    while(GPIO_ReadInputDataBit(GPIOA, SDO_PIN) == 0);
+    while(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_2) == 0);
     
     uint16_t dout = (uint16_t)val1 << 2;
     uint16_t iout = (uint16_t)val2 << 2;
     
     for(int8_t ii = 10; ii >= 0; ii--) {
         if(dout & (1 << ii)) {
-            GPIO_SetBit(GPIOA, SDI_PIN);
+            GPIO_SetBit(GPIOA, GPIO_Pin_4);
         } else {
-            GPIO_ResetBit(GPIOA, SDI_PIN);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_4);
         }
         
         if(iout & (1 << ii)) {
-            GPIO_SetBit(GPIOA, SII_PIN);
+            GPIO_SetBit(GPIOA, GPIO_Pin_3);
         } else {
-            GPIO_ResetBit(GPIOA, SII_PIN);
+            GPIO_ResetBit(GPIOA, GPIO_Pin_3);
         }
         
         inBits <<= 1;
-        inBits |= GPIO_ReadInputDataBit(GPIOA, SDO_PIN);
+        inBits |= GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_2);
         
-        GPIO_SetBit(GPIOA, SCI_PIN);
-        GPIO_ResetBit(GPIOA, SCI_PIN);
+        GPIO_SetBit(GPIOA, GPIO_Pin_1);
+        GPIO_ResetBit(GPIOA, GPIO_Pin_1);
     }
     
     return inBits >> 2;
@@ -239,22 +206,18 @@ void writeFuse(uint16_t fuse, uint8_t val) {
 }
 
 void readFuses(void) {
-    uint8_t val;
-    
-    // Чтение LFUSE
-    shiftOut(0x04, 0x4C);
+    // Чтение фьюзов (убрана неиспользуемая переменная)
+    shiftOut(0x04, 0x4C);  // LFuse
     shiftOut(0x00, 0x68);
-    val = shiftOut(0x00, 0x6C);
+    shiftOut(0x00, 0x6C);
     
-    // Чтение HFUSE  
-    shiftOut(0x04, 0x4C);
+    shiftOut(0x04, 0x4C);  // HFuse
     shiftOut(0x00, 0x7A);
-    val = shiftOut(0x00, 0x7E);
+    shiftOut(0x00, 0x7E);
     
-    // Чтение EFUSE (для совместимости)
-    shiftOut(0x04, 0x4C);
+    shiftOut(0x04, 0x4C);  // EFuse
     shiftOut(0x00, 0x6A);
-    val = shiftOut(0x00, 0x6E);
+    shiftOut(0x00, 0x6E);
 }
 
 uint16_t readSignature(void) {
