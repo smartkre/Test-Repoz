@@ -1,286 +1,242 @@
 #include "stm32f1xx.h"
+#include "stm32f103x6.h"
+#include "system_stm32f1xx.h"
 
-/* ======= Макросы для GPIO (ваши оригинальные) ======= */
-#define pin_set(PORT,PIN)     ((PORT)->BSRR = (1U << (PIN)))
-#define pin_clear(PORT,PIN)   ((PORT)->BRR  = (1U << (PIN)))
-#define pin_read(PORT,PIN)    (((PORT)->IDR >> (PIN)) & 1U)
+// Определение пинов
+#define RST_PIN    GPIO_Pin_0
+#define SCI_PIN    GPIO_Pin_1
+#define SDO_PIN    GPIO_Pin_2
+#define SII_PIN    GPIO_Pin_3
+#define SDI_PIN    GPIO_Pin_4
+#define VCC_PIN    GPIO_Pin_5
+#define BUTTON_PIN GPIO_Pin_6
+#define LED_PIN    GPIO_Pin_13
 
-/* ======= Конфигурация пинов ======= */
-#define LED_PORT    GPIOC
-#define LED_PIN     13
-
-#define BUTTON_PORT GPIOA
-#define BUTTON_PIN  9
-
-#define VCC_CONTROL_PIN_USED 0
-#define VCC_PORT    GPIOA
-#define VCC_PIN     0
-
-#define RST_PORT    GPIOB
-#define RST_PIN     0
-
-#define SCI_PORT    GPIOB
-#define SCI_PIN     4
-
+#define RST_PORT    GPIOA
+#define SCI_PORT    GPIOA
+#define SDO_PORT    GPIOA
 #define SII_PORT    GPIOA
-#define SII_PIN     6
-
 #define SDI_PORT    GPIOA
-#define SDI_PIN     7
+#define VCC_PORT    GPIOA
+#define BUTTON_PORT GPIOA
+#define LED_PORT    GPIOC
 
-#define SDO_PORT    GPIOB
-#define SDO_PIN     1
+// Определения для фьюзов
+#define HFUSE  0x747C
+#define LFUSE  0x646C
+#define EFUSE  0x666E
 
-/* ======= Тайминги ======= */
-#define SCI_FREQ_HZ         100000U
-#define SCI_HALF_PERIOD_US  (1000000U / (2 * SCI_FREQ_HZ))
+#define ATTINY13 0x9007
 
-#define DEBOUNCE_DELAY_US   50000U
-#define RESET_PULSE_US      10U
-#define HVSP_SETUP_US       1000U
-#define PROGRAM_DELAY_US    10000U
+// Прототипы функций
+void GPIO_Init(void);
+void delay_ms(uint32_t ms);
+void delay_us(uint32_t us);
+void blinkLED(uint8_t times, uint16_t duration);
+uint8_t shiftOut(uint8_t val1, uint8_t val2);
+void writeFuse(uint16_t fuse, uint8_t val);
+void readFuses(void);
+uint16_t readSignature(void);
+uint8_t checkButton(void);
 
-/* ======= Прототипы функций ======= */
-static void SystemClock_Config(void);
-static void GPIO_Init_All(void);
-static void DWT_Init(void);
-static inline void delay_us(uint32_t us);
-static void led_blink_pattern(uint8_t times, uint32_t delay_ms);
-static void hvsp_shiftOut(uint16_t data);
-static uint16_t hvsp_read(uint16_t instr);
-static uint16_t hvsp_readSignature(void);
-static void hvsp_writeFuse(uint16_t cmd);
-
-/* ======= Реализация функций ======= */
-
-/* Настройка системного тактирования */
-static void SystemClock_Config(void) {
-    // Включение HSI (8 MHz)
-    RCC->CR |= RCC_CR_HSION;
-    while ((RCC->CR & RCC_CR_HSIRDY) == 0) {
-        // Ожидание готовности HSI
-    }
-    
-    // Настройка задержки флэш-памяти
-    FLASH->ACR |= FLASH_ACR_LATENCY_1;
-    
-    // Выбор HSI как источника системной частоты
-    RCC->CFGR &= ~RCC_CFGR_SW;
-    RCC->CFGR |= RCC_CFGR_SW_HSI;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI) {
-        // Ожидание переключения
-    }
-}
-
-/* Инициализация GPIO */
-static void GPIO_Init_All(void) {
-    // Включение тактирования портов
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | 
-                    RCC_APB2ENR_IOPBEN | 
-                    RCC_APB2ENR_IOPCEN | 
-                    RCC_APB2ENR_AFIOEN;
-    
-    // Барьер памяти
-    __DSB();
-
-    // Освобождение PB4 от JTAG
-    AFIO->MAPR &= ~AFIO_MAPR_SWJ_CFG_Msk;
-    AFIO->MAPR |= AFIO_MAPR_SWJ_CFG_JTAGDISABLE;
-
-    // Настройка PC13 (LED) как выход 2MHz push-pull
-    GPIOC->CRH &= ~(0xFU << ((LED_PIN - 8) * 4));
-    GPIOC->CRH |=  (0x2U << ((LED_PIN - 8) * 4));
-    pin_set(LED_PORT, LED_PIN); // LED off
-
-    // Настройка PA9 (кнопка) как вход с подтяжкой вверх
-    GPIOA->CRH &= ~(0xFU << ((BUTTON_PIN - 8) * 4));
-    GPIOA->CRH |=  (0x8U << ((BUTTON_PIN - 8) * 4));
-    GPIOA->ODR |= (1U << BUTTON_PIN);
-
-    // Настройка PB0 (RST control) как выход 2MHz
-    GPIOB->CRL &= ~(0xFU << (RST_PIN * 4));
-    GPIOB->CRL |=  (0x2U << (RST_PIN * 4));
-    pin_set(RST_PORT, RST_PIN); // По умолчанию высокий уровень
-
-#if VCC_CONTROL_PIN_USED
-    // Настройка PA0 (VCC control) как выход 2MHz
-    GPIOA->CRL &= ~(0xFU << (VCC_PIN * 4));
-    GPIOA->CRL |=  (0x2U << (VCC_PIN * 4));
-    pin_clear(VCC_PORT, VCC_PIN); // По умолчанию выключено
-#endif
-
-    // Настройка PB4 (SCI) как выход 2MHz
-    GPIOB->CRL &= ~(0xFU << (SCI_PIN * 4));
-    GPIOB->CRL |=  (0x2U << (SCI_PIN * 4));
-    pin_clear(SCI_PORT, SCI_PIN);
-
-    // Настройка PA6 (SII) как выход 2MHz
-    GPIOA->CRL &= ~(0xFU << (SII_PIN * 4));
-    GPIOA->CRL |=  (0x2U << (SII_PIN * 4));
-    pin_clear(SII_PORT, SII_PIN);
-
-    // Настройка PA7 (SDI) как выход 2MHz
-    GPIOA->CRL &= ~(0xFU << (SDI_PIN * 4));
-    GPIOA->CRL |=  (0x2U << (SDI_PIN * 4));
-    pin_clear(SDI_PORT, SDI_PIN);
-
-    // Настройка PB1 (SDO) как вход с подтяжкой вверх
-    GPIOB->CRL &= ~(0xFU << (SDO_PIN * 4));
-    GPIOB->CRL |=  (0x8U << (SDO_PIN * 4));
-    GPIOB->ODR |= (1U << SDO_PIN);
-}
-
-/* Инициализация DWT для точных задержек */
-static void DWT_Init(void) {
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-/* Точная задержка в микросекундах */
-static inline void delay_us(uint32_t us) {
-    uint32_t start = DWT->CYCCNT;
-    uint32_t cycles = (SystemCoreClock / 1000000U) * us;
-    
-    while ((DWT->CYCCNT - start) < cycles) {
-        // Активное ожидание
-    }
-}
-
-/* Моргание светодиодом */
-static void led_blink_pattern(uint8_t times, uint32_t delay_ms) {
-    for (uint8_t i = 0; i < times; i++) {
-        pin_clear(LED_PORT, LED_PIN); // LED on
-        delay_us(delay_ms * 1000U);
-        pin_set(LED_PORT, LED_PIN);   // LED off
-        if (i < times - 1) {
-            delay_us(delay_ms * 1000U);
-        }
-    }
-}
-
-/* HVSP - передача данных */
-static void hvsp_shiftOut(uint16_t data) {
-    for (int8_t i = 10; i >= 0; i--) {
-        // Установка SII
-        if (data & (1U << i)) {
-            pin_set(SII_PORT, SII_PIN);
-        } else {
-            pin_clear(SII_PORT, SII_PIN);
-        }
-
-        // Установка SDI
-        if (data & (1U << i)) {
-            pin_set(SDI_PORT, SDI_PIN);
-        } else {
-            pin_clear(SDI_PORT, SDI_PIN);
-        }
-
-        // Тактовый импульс SCI
-        delay_us(SCI_HALF_PERIOD_US);
-        pin_set(SCI_PORT, SCI_PIN);
-        delay_us(SCI_HALF_PERIOD_US);
-        pin_clear(SCI_PORT, SCI_PIN);
-    }
-}
-
-/* HVSP - чтение данных */
-static uint16_t hvsp_read(uint16_t instr) {
-    uint16_t result = 0;
-    
-    for (int8_t i = 10; i >= 0; i--) {
-        // Установка SII
-        if (instr & (1U << i)) {
-            pin_set(SII_PORT, SII_PIN);
-        } else {
-            pin_clear(SII_PORT, SII_PIN);
-        }
-
-        // Тактовый импульс SCI
-        delay_us(SCI_HALF_PERIOD_US);
-        pin_set(SCI_PORT, SCI_PIN);
-        delay_us(SCI_HALF_PERIOD_US);
-
-        // Чтение SDO
-        if (pin_read(SDO_PORT, SDO_PIN)) {
-            result |= (1U << i);
-        }
-
-        pin_clear(SCI_PORT, SCI_PIN);
-        delay_us(SCI_HALF_PERIOD_US);
-    }
-    
-    return result;
-}
-
-/* Чтение сигнатуры ATtiny */
-static uint16_t hvsp_readSignature(void) {
-    return hvsp_read(0x080U); // Команда чтения сигнатуры
-}
-
-/* Запись fuse-битов */
-static void hvsp_writeFuse(uint16_t cmd) {
-    hvsp_shiftOut(cmd);
-    delay_us(PROGRAM_DELAY_US); // Задержка программирования
-}
-
-/* ======= Главная функция ======= */
 int main(void) {
     // Инициализация системы
-    SystemClock_Config();
-    DWT_Init();
-    GPIO_Init_All();
-
-    // Тестовое моргание при старте
-    led_blink_pattern(3, 200);
-
+    SystemInit();
+    GPIO_Init();
+    
+    // Начальная индикация - 2 моргания по 0.5 сек
+    blinkLED(2, 500);
+    
     // Основной цикл
-    while (1) {
-        // Проверка нажатия кнопки (активный низкий уровень)
-        if (!pin_read(BUTTON_PORT, BUTTON_PIN)) {
-            // Антидребезг
-            delay_us(DEBOUNCE_DELAY_US);
+    while(1) {
+        // Мигание раз в секунду в режиме ожидания
+        GPIO_WriteBit(LED_PORT, LED_PIN, Bit_SET);
+        delay_ms(500);
+        GPIO_WriteBit(LED_PORT, LED_PIN, Bit_RESET);
+        delay_ms(500);
+        
+        // Проверка нажатия кнопки
+        if(checkButton()) {
+            // Начало процедуры программирования
+            GPIO_WriteBit(SDI_PORT, SDI_PIN, Bit_RESET);
+            GPIO_WriteBit(SII_PORT, SII_PIN, Bit_RESET);
             
-            if (!pin_read(BUTTON_PORT, BUTTON_PIN)) {
-#if VCC_CONTROL_PIN_USED
-                // Подача VCC на ATtiny
-                pin_set(VCC_PORT, VCC_PIN);
-                delay_us(20);
-#endif
-
-                // Подача 12V на RESET (активный низкий)
-                pin_clear(RST_PORT, RST_PIN);
-                delay_us(RESET_PULSE_US);
-
-                // Ожидание инициализации HVSP
-                delay_us(HVSP_SETUP_US);
-
-                // Чтение и проверка сигнатуры
-                uint16_t signature = hvsp_readSignature();
+            // Установка SDO как выхода
+            GPIO_InitTypeDef GPIO_InitStruct;
+            GPIO_InitStruct.GPIO_Pin = SDO_PIN;
+            GPIO_InitStruct.GPIO_Mode = GPIO_Mode_Out_PP;
+            GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz;
+            GPIO_Init(SDO_PORT, &GPIO_InitStruct);
+            
+            GPIO_WriteBit(SDO_PORT, SDO_PIN, Bit_RESET);
+            GPIO_WriteBit(RST_PORT, RST_PIN, Bit_SET);  // 12V Off
+            GPIO_WriteBit(VCC_PORT, VCC_PIN, Bit_SET);  // VCC On
+            
+            delay_us(20);
+            GPIO_WriteBit(RST_PORT, RST_PIN, Bit_RESET); // 12V On
+            delay_us(10);
+            
+            // Возврат SDO как входа
+            GPIO_InitStruct.GPIO_Pin = SDO_PIN;
+            GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+            GPIO_Init(SDO_PORT, &GPIO_InitStruct);
+            
+            delay_us(300);
+            
+            // Чтение сигнатуры
+            uint16_t signature = readSignature();
+            
+            // Программирование фьюзов для ATtiny13
+            if(signature == ATTINY13) {
+                writeFuse(LFUSE, 0x6A);
+                writeFuse(HFUSE, 0xFF);
                 
-                if ((signature & 0xFFU) == 0x0BU) { // ATtiny13
-                    // Программирование fuse-битов
-                    hvsp_writeFuse(0x040U); // LFUSE
-                    hvsp_writeFuse(0x142U); // HFUSE
-                    
-                    // Сигнал успеха
-                    led_blink_pattern(5, 100);
-                } else {
-                    // Сигнал ошибки
-                    led_blink_pattern(2, 500);
-                }
-
-                // Отключение 12V от RESET
-                pin_set(RST_PORT, RST_PIN);
-
-#if VCC_CONTROL_PIN_USED
-                // Отключение VCC
-                pin_clear(VCC_PORT, VCC_PIN);
-#endif
-
-                // Задержка перед следующим нажатием
-                delay_us(1000000U); // 1 секунда
+                // Проверка результата
+                readFuses();
+                blinkLED(3, 1000);  // Успех - 3 моргания за 1 сек
+            } else {
+                blinkLED(5, 1500);  // Ошибка - 5 морганий за 1.5 сек
             }
+            
+            // Завершение
+            GPIO_WriteBit(SCI_PORT, SCI_PIN, Bit_RESET);
+            GPIO_WriteBit(VCC_PORT, VCC_PIN, Bit_RESET);
+            GPIO_WriteBit(RST_PORT, RST_PIN, Bit_SET);
+            
+            delay_ms(1000);
         }
+    }
+}
+
+// Инициализация GPIO
+void GPIO_Init(void) {
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC, ENABLE);
+    
+    GPIO_InitTypeDef GPIO_InitStruct;
+    
+    // Настройка выходов
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_Out_PP;
+    
+    GPIO_InitStruct.GPIO_Pin = RST_PIN | SCI_PIN | SII_PIN | SDI_PIN | VCC_PIN;
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = LED_PIN;
+    GPIO_Init(GPIOC, &GPIO_InitStruct);
+    
+    // Настройка входа кнопки с подтяжкой к VCC
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    // Настройка SDO как входа по умолчанию
+    GPIO_InitStruct.GPIO_Pin = SDO_PIN;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    // Установка начальных состояний
+    GPIO_WriteBit(RST_PORT, RST_PIN, Bit_SET);
+    GPIO_WriteBit(VCC_PORT, VCC_PIN, Bit_RESET);
+}
+
+// Функция моргания светодиодом
+void blinkLED(uint8_t times, uint16_t duration) {
+    uint16_t delay_time = duration / (times * 2);
+    
+    for(uint8_t i = 0; i < times; i++) {
+        GPIO_WriteBit(LED_PORT, LED_PIN, Bit_SET);
+        delay_ms(delay_time);
+        GPIO_WriteBit(LED_PORT, LED_PIN, Bit_RESET);
+        delay_ms(delay_time);
+    }
+}
+
+// Проверка нажатия кнопки с антидребезгом
+uint8_t checkButton(void) {
+    if(GPIO_ReadInputDataBit(BUTTON_PORT, BUTTON_PIN) == Bit_RESET) {
+        delay_ms(50);  // Антидребезг
+        if(GPIO_ReadInputDataBit(BUTTON_PORT, BUTTON_PIN) == Bit_RESET) {
+            while(GPIO_ReadInputDataBit(BUTTON_PORT, BUTTON_PIN) == Bit_RESET); // Ожидание отпускания
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Функции HVSP (аналогичные Arduino коду)
+uint8_t shiftOut(uint8_t val1, uint8_t val2) {
+    uint16_t inBits = 0;
+    
+    // Ожидание готовности SDO
+    while(GPIO_ReadInputDataBit(SDO_PORT, SDO_PIN) == Bit_RESET);
+    
+    uint16_t dout = (uint16_t)val1 << 2;
+    uint16_t iout = (uint16_t)val2 << 2;
+    
+    for(int8_t ii = 10; ii >= 0; ii--) {
+        GPIO_WriteBit(SDI_PORT, SDI_PIN, (dout & (1 << ii)) ? Bit_SET : Bit_RESET);
+        GPIO_WriteBit(SII_PORT, SII_PIN, (iout & (1 << ii)) ? Bit_SET : Bit_RESET);
+        
+        inBits <<= 1;
+        inBits |= (GPIO_ReadInputDataBit(SDO_PORT, SDO_PIN) == Bit_SET) ? 1 : 0;
+        
+        GPIO_WriteBit(SCI_PORT, SCI_PIN, Bit_SET);
+        GPIO_WriteBit(SCI_PORT, SCI_PIN, Bit_RESET);
+    }
+    
+    return inBits >> 2;
+}
+
+void writeFuse(uint16_t fuse, uint8_t val) {
+    shiftOut(0x40, 0x4C);
+    shiftOut(val, 0x2C);
+    shiftOut(0x00, (uint8_t)(fuse >> 8));
+    shiftOut(0x00, (uint8_t)fuse);
+}
+
+void readFuses(void) {
+    uint8_t val;
+    
+    // Чтение LFUSE
+    shiftOut(0x04, 0x4C);
+    shiftOut(0x00, 0x68);
+    val = shiftOut(0x00, 0x6C);
+    
+    // Чтение HFUSE  
+    shiftOut(0x04, 0x4C);
+    shiftOut(0x00, 0x7A);
+    val = shiftOut(0x00, 0x7E);
+    
+    // Чтение EFUSE (для совместимости)
+    shiftOut(0x04, 0x4C);
+    shiftOut(0x00, 0x6A);
+    val = shiftOut(0x00, 0x6E);
+}
+
+uint16_t readSignature(void) {
+    uint16_t sig = 0;
+    uint8_t val;
+    
+    for(uint8_t ii = 1; ii < 3; ii++) {
+        shiftOut(0x08, 0x4C);
+        shiftOut(ii, 0x0C);
+        shiftOut(0x00, 0x68);
+        val = shiftOut(0x00, 0x6C);
+        sig = (sig << 8) + val;
+    }
+    
+    return sig;
+}
+
+// Простые функции задержки
+void delay_ms(uint32_t ms) {
+    for(uint32_t i = 0; i < ms; i++) {
+        for(uint32_t j = 0; j < 7200; j++);  // Примерно 1ms при 72MHz
+    }
+}
+
+void delay_us(uint32_t us) {
+    for(uint32_t i = 0; i < us; i++) {
+        for(uint32_t j = 0; j < 7; j++);  // Примерно 1us при 72MHz
     }
 }
