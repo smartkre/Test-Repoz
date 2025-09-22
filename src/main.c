@@ -18,7 +18,6 @@
 
 // Global variables
 volatile uint32_t sys_tick = 0;
-volatile uint8_t button_pressed = 0;
 
 // --- System tick handler for delays ---
 void SysTick_Handler(void) {
@@ -32,9 +31,11 @@ void delay_ms(uint32_t ms) {
 }
 
 void delay_us(uint32_t us) {
-    // Simple delay loop for microseconds (approximate at 8MHz)
-    volatile uint32_t count = us * 2;
-    while (count--);
+    // More accurate delay for HVSP timing at 8MHz
+    volatile uint32_t count = us * 8;
+    while (count--) {
+        __NOP();
+    }
 }
 
 // --- Инициализация тактирования с внешним HSE (8 МГц) и отключением LSE ---
@@ -90,7 +91,7 @@ void GPIO_Init(void) {
     GPIOA->BSRR = BUTTON_PIN; // Enable pull-up
     
     // Configure GPIOB pins
-    // PB0 (RST), PB1 (SDO), PB4 (SCI) as output push-pull 10MHz initially
+    // PB0 (RST), PB1 (SDO), PB4 (SCI) as output push-pull 10MHz
     GPIOB->CRL &= ~(0xF << (0 * 4) | 0xF << (1 * 4) | 0xF << (4 * 4));
     GPIOB->CRL |= (0x1 << (0 * 4) | 0x1 << (1 * 4) | 0x1 << (4 * 4));
     
@@ -100,8 +101,10 @@ void GPIO_Init(void) {
     GPIOC->CRH |= (0x1 << ((13-8) * 4)); // Output push-pull 10MHz
     
     // Set initial states
-    GPIOB->BSRR = RST_PIN;  // RST HIGH (12V off)
-    GPIOC->BSRR = LED_PIN;  // LED OFF (PC13 is inverted)
+    GPIOA->BRR = SDI_PIN | SII_PIN;     // SDI, SII LOW
+    GPIOB->BSRR = RST_PIN;              // RST HIGH (12V off)
+    GPIOB->BRR = SCI_PIN;               // SCI LOW
+    GPIOC->BSRR = LED_PIN;              // LED OFF (PC13 is inverted)
 }
 
 // --- LED Control Functions ---
@@ -111,6 +114,14 @@ void LED_On(void) {
 
 void LED_Off(void) {
     GPIOC->BSRR = LED_PIN; // PC13 high = LED off  
+}
+
+void LED_Toggle(void) {
+    if (GPIOC->ODR & LED_PIN) {
+        LED_On();
+    } else {
+        LED_Off();
+    }
 }
 
 void LED_Blink(uint8_t count, uint16_t on_time, uint16_t off_time) {
@@ -124,87 +135,75 @@ void LED_Blink(uint8_t count, uint16_t on_time, uint16_t off_time) {
     }
 }
 
-// --- Button handling ---
+// --- Simplified button handling ---
 uint8_t Button_Pressed(void) {
     static uint8_t last_state = 1;
-    static uint32_t debounce_time = 0;
-    
     uint8_t current_state = (GPIOA->IDR & BUTTON_PIN) ? 1 : 0;
     
-    if (current_state != last_state) {
-        debounce_time = sys_tick;
-    }
-    
-    if ((sys_tick - debounce_time) > 50) { // 50ms debounce
-        if (current_state == 0 && last_state == 1) { // Button pressed
+    if (current_state == 0 && last_state == 1) { // Button pressed (high to low)
+        delay_ms(50); // Simple debounce
+        current_state = (GPIOA->IDR & BUTTON_PIN) ? 1 : 0;
+        if (current_state == 0) {
             last_state = current_state;
             return 1;
         }
-        last_state = current_state;
     }
-    
+    last_state = current_state;
     return 0;
 }
 
 // --- HVSP Protocol Functions ---
 
-// Set pin as output
-void Set_Pin_Output(GPIO_TypeDef* gpio, uint32_t pin) {
-    if (gpio == GPIOA) {
-        if (pin == SII_PIN) {
-            GPIOA->CRL &= ~(0xF << (6 * 4));
-            GPIOA->CRL |= (0x1 << (6 * 4));
-        } else if (pin == SDI_PIN) {
-            GPIOA->CRL &= ~(0xF << (7 * 4));
-            GPIOA->CRL |= (0x1 << (7 * 4));
-        }
-    } else if (gpio == GPIOB) {
-        if (pin == SDO_PIN) {
-            GPIOB->CRL &= ~(0xF << (1 * 4));
-            GPIOB->CRL |= (0x1 << (1 * 4));
-        }
-    }
+// Set SDO as input
+void SDO_Input(void) {
+    GPIOB->CRL &= ~(0xF << (1 * 4));
+    GPIOB->CRL |= (0x4 << (1 * 4)); // Input floating
 }
 
-// Set pin as input
-void Set_Pin_Input(GPIO_TypeDef* gpio, uint32_t pin) {
-    if (gpio == GPIOB && pin == SDO_PIN) {
-        GPIOB->CRL &= ~(0xF << (1 * 4));
-        GPIOB->CRL |= (0x4 << (1 * 4)); // Input floating
-    }
-}
-
-// Digital write
-void Digital_Write(GPIO_TypeDef* gpio, uint32_t pin, uint8_t state) {
-    if (state) {
-        gpio->BSRR = pin;
-    } else {
-        gpio->BRR = pin;
-    }
-}
-
-// Digital read
-uint8_t Digital_Read(GPIO_TypeDef* gpio, uint32_t pin) {
-    return (gpio->IDR & pin) ? 1 : 0;
+// Set SDO as output
+void SDO_Output(void) {
+    GPIOB->CRL &= ~(0xF << (1 * 4));
+    GPIOB->CRL |= (0x1 << (1 * 4)); // Output push-pull 10MHz
 }
 
 // HVSP Shift Out function
 uint8_t HVSP_ShiftOut(uint8_t val1, uint8_t val2) {
     uint8_t inBits = 0;
     
-    // Wait until SDO goes high
-    while (!Digital_Read(GPIOB, SDO_PIN));
+    // Wait until SDO goes high (with timeout)
+    uint32_t timeout = 1000;
+    while (!(GPIOB->IDR & SDO_PIN) && timeout--) {
+        delay_us(1);
+    }
+    
+    if (!timeout) return 0; // Timeout error
     
     uint16_t dout = (uint16_t)val1 << 2;
     uint16_t iout = (uint16_t)val2 << 2;
     
     for (int ii = 10; ii >= 0; ii--) {
-        Digital_Write(GPIOA, SDI_PIN, !!(dout & (1 << ii)));
-        Digital_Write(GPIOA, SII_PIN, !!(iout & (1 << ii)));
+        // Set SDI
+        if (dout & (1 << ii)) {
+            GPIOA->BSRR = SDI_PIN;
+        } else {
+            GPIOA->BRR = SDI_PIN;
+        }
+        
+        // Set SII
+        if (iout & (1 << ii)) {
+            GPIOA->BSRR = SII_PIN;
+        } else {
+            GPIOA->BRR = SII_PIN;
+        }
+        
         inBits <<= 1;
-        inBits |= Digital_Read(GPIOB, SDO_PIN);
-        Digital_Write(GPIOB, SCI_PIN, 1);
-        Digital_Write(GPIOB, SCI_PIN, 0);
+        inBits |= (GPIOB->IDR & SDO_PIN) ? 1 : 0;
+        
+        // Clock pulse
+        GPIOB->BSRR = SCI_PIN;  // SCI HIGH
+        delay_us(2);
+        GPIOB->BRR = SCI_PIN;   // SCI LOW
+        delay_us(2);
     }
     
     return inBits >> 2;
@@ -253,33 +252,45 @@ uint16_t HVSP_ReadSignature(void) {
 
 // Main HVSP recovery function
 uint8_t HVSP_RecoverATtiny13(void) {
-    // Set SDO to output initially
-    Set_Pin_Output(GPIOB, SDO_PIN);
+    // Debug: Fast blink to show function entered
+    LED_Blink(2, 50, 50);
+    delay_ms(200);
     
-    // Initialize pins
-    Digital_Write(GPIOA, SDI_PIN, 0);
-    Digital_Write(GPIOA, SII_PIN, 0);
-    Digital_Write(GPIOB, SDO_PIN, 0);
-    Digital_Write(GPIOB, RST_PIN, 1);  // 12V Off
+    // Set SDO to output initially
+    SDO_Output();
+    
+    // Initialize pins for HVSP
+    GPIOA->BRR = SDI_PIN | SII_PIN;     // SDI, SII LOW
+    GPIOB->BRR = SDO_PIN;               // SDO LOW
+    GPIOB->BSRR = RST_PIN;              // RST HIGH (12V Off)
     
     delay_us(20);
-    Digital_Write(GPIOB, RST_PIN, 0);  // 12V On
+    GPIOB->BRR = RST_PIN;               // RST LOW (12V On)
     delay_us(10);
     
-    // Set SDO to input
-    Set_Pin_Input(GPIOB, SDO_PIN);
+    // Set SDO to input for reading
+    SDO_Input();
     delay_us(300);
+    
+    // Debug: Another blink to show we're about to read signature
+    LED_Blink(3, 50, 50);
+    delay_ms(200);
     
     // Read signature
     uint16_t sig = HVSP_ReadSignature();
     
-    // Check if it's ATtiny13
-    if (sig != ATTINY13) {
+    // Debug: Show signature result
+    if (sig == ATTINY13) {
+        LED_Blink(1, 500, 0); // Long blink for correct signature
+    } else {
+        LED_Blink(10, 50, 50); // Fast blinks for wrong signature
         // Turn off programming voltage
-        Digital_Write(GPIOB, SCI_PIN, 0);
-        Digital_Write(GPIOB, RST_PIN, 1); // 12V Off
+        GPIOB->BRR = SCI_PIN;
+        GPIOB->BSRR = RST_PIN; // 12V Off
         return 0; // Error
     }
+    
+    delay_ms(500);
     
     // Read current fuses
     HVSP_ReadFuses();
@@ -292,8 +303,8 @@ uint8_t HVSP_RecoverATtiny13(void) {
     HVSP_ReadFuses();
     
     // Turn off programming voltage
-    Digital_Write(GPIOB, SCI_PIN, 0);
-    Digital_Write(GPIOB, RST_PIN, 1); // 12V Off
+    GPIOB->BRR = SCI_PIN;
+    GPIOB->BSRR = RST_PIN; // 12V Off
     
     return 1; // Success
 }
@@ -306,10 +317,23 @@ int main(void) {
     // Startup indication: 3 blinks in 1.5 seconds
     delay_ms(200);
     LED_Blink(3, 200, 300);
+    LED_Off();
+    
+    uint32_t last_blink = sys_tick;
+    uint8_t led_state = 0;
     
     while (1) {
         // Waiting state: blink once per second
-        LED_Blink(1, 100, 900);
+        if ((sys_tick - last_blink) >= 1000) {
+            if (led_state) {
+                LED_Off();
+                led_state = 0;
+            } else {
+                LED_On();
+                led_state = 1;
+            }
+            last_blink = sys_tick;
+        }
         
         // Check for button press
         if (Button_Pressed()) {
@@ -326,8 +350,10 @@ int main(void) {
                 LED_Blink(5, 100, 100);
             }
             
-            // Wait a bit before returning to waiting state
-            delay_ms(2000);
+            LED_Off();
+            // Reset timing for waiting state
+            last_blink = sys_tick;
+            led_state = 0;
         }
     }
 }
