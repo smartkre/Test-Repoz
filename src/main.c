@@ -29,7 +29,7 @@
 #define EFUSE 0x666EU
 
 /* ========== Includes ========== */
-#include "stm32f10x.h"  /* CMSIS-SVD style defs (register names) */
+#include "stm32f1xx.h"  /* CMSIS-SVD style defs (register names) */
 #include <stdint.h>
 
 /* ========== Pin definitions (bitmasks) ========== */
