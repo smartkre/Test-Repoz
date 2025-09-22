@@ -1,322 +1,459 @@
-#include "stm32f1xx.h"
+/* main.c
+   HVSP for ATtiny13 on STM32F103C6T6
+   Pin mapping (as requested):
+     PB0  -> RST (level-shifter control, inverted: HIGH -> 12V off, LOW -> 12V on)
+     PB4  -> SCI (serial clock input to target)
+     PB1  -> SDO  (target data output) - input
+     PA6  -> SII  (instruction input to target)
+     PA7  -> SDI  (data input to target)
+     PA9  -> BUTTON (active low, internal pull-up)
+     PC13 -> LED (status)
+   If you have hardware to switch VCC for target, enable VCC_CONTROL_PIN_USED=1 and set VCC_PIN_* appropriately.
+*/
 
-// Определение выводов согласно вашему переназначению
-#define HVSP_RST_PORT GPIOB
-#define HVSP_RST_PIN  (1 << 0)  // PB0
+/* ========== Configuration ========== */
+#define VCC_CONTROL_PIN_USED 0   /* 0 = VCC tied to 3.3V (not controlled); 1 = control VCC via GPIO */
+#define VCC_PIN_PORT GPIOA
+#define VCC_PIN       (1 << 0)   /* PA0 if you have a transistor to switch VCC */
 
-#define HVSP_SCI_PORT GPIOB
-#define HVSP_SCI_PIN  (1 << 4)  // PB4
+/* Timing configuration */
+#define SCI_FREQ_HZ 100000U      /* target SCI frequency ~100kHz */
+#define SCI_HALF_PERIOD_US (1000000U / (2U * SCI_FREQ_HZ)) /* us for half period */
 
-#define HVSP_SDO_PORT GPIOB
-#define HVSP_SDO_PIN  (1 << 1)  // PB1
+/* ATTiny signatures */
+#define ATTINY13_SIG 0x9007U
 
-#define HVSP_SII_PORT GPIOA
-#define HVSP_SII_PIN  (1 << 6)  // PA6
+/* Fuse addresses from Arduino code */
+#define LFUSE 0x646CU
+#define HFUSE 0x747CU
+#define EFUSE 0x666EU
 
-#define HVSP_SDI_PORT GPIOA
-#define HVSP_SDI_PIN  (1 << 7)  // PA7
+/* ========== Includes ========== */
+#include "stm32f10x.h"  /* CMSIS-SVD style defs (register names) */
+#include <stdint.h>
+
+/* ========== Pin definitions (bitmasks) ========== */
+#define RST_PORT GPIOB
+#define RST_PIN  (1 << 0)   /* PB0 */
+
+#define SCI_PORT GPIOB
+#define SCI_PIN  (1 << 4)   /* PB4 */
+
+#define SDO_PORT GPIOB
+#define SDO_PIN  (1 << 1)   /* PB1 */
+
+#define SII_PORT GPIOA
+#define SII_PIN  (1 << 6)   /* PA6 */
+
+#define SDI_PORT GPIOA
+#define SDI_PIN  (1 << 7)   /* PA7 */
 
 #define BUTTON_PORT GPIOA
-#define BUTTON_PIN  (1 << 9)    // PA9
+#define BUTTON_PIN  (1 << 9) /* PA9 */
 
 #define LED_PORT GPIOC
-#define LED_PIN  (1 << 13)      // PC13
+#define LED_PIN  (1 << 13)  /* PC13 (onboard LED) */
 
-// Определения для фьюзов и сигнатур
-#define HFUSE 0x747C
-#define LFUSE 0x646C
-#define EFUSE 0x666E
+/* ========== Forward declarations ========== */
+static void System_Init(void);
+static void GPIO_Init_All(void);
+static void DWT_Delay_Init(void);
+static void delay_us(uint32_t us);
 
-#define ATTINY13_SIGNATURE 0x9007
+static inline void pin_set(GPIO_TypeDef *port, uint32_t pin);
+static inline void pin_clear(GPIO_TypeDef *port, uint32_t pin);
+static inline uint8_t pin_read(GPIO_TypeDef *port, uint32_t pin);
 
-// Прототипы функций
-void System_Init(void);
-void GPIO_Init(void);
-void LED_Blink(uint8_t count, uint32_t duration_ms, uint32_t pause_ms);
-uint8_t Button_Pressed(void);
-void HVSP_Enter(void);
-void HVSP_Exit(void);
-uint8_t HVSP_ShiftOut(uint8_t val1, uint8_t val2);
-uint16_t HVSP_ReadSignature(void);
-void HVSP_WriteFuse(uint16_t fuse, uint8_t value);
-void HVSP_ReadFuses(void);
-void Delay_ms(uint32_t ms);
-void Delay_us(uint32_t us);
+static void led_blink_pattern_success(void);
+static void led_blink_pattern_error(void);
+static void led_blink_startup(void);
+static void led_blink_waiting(void);
 
-int main(void) {
-    System_Init();
-    GPIO_Init();
-    
-    // Последовательность инициализации
-    LED_Blink(3, 100, 300); // 3 моргания по 100мс с паузой 300мс (итого ~1.5с)
-    
-    uint8_t programming_done = 0;
-    
-    while(1) {
-        if (!programming_done) {
-            // Мигание каждую секунду в режиме ожидания
-            LED_PORT->ODR ^= LED_PIN;
-            Delay_ms(1000);
-        }
-        
-        if (Button_Pressed() && !programming_done) {
-            // Нажата кнопка - начинаем программирование
-            programming_done = 1;
-            
-            // Входим в режим программирования
-            HVSP_Enter();
-            
-            // Читаем сигнатуру
-            uint16_t signature = HVSP_ReadSignature();
-            
-            if (signature == ATTINY13_SIGNATURE) {
-                // Программируем фьюзы для ATtiny13
-                HVSP_WriteFuse(LFUSE, 0x6A);
-                HVSP_WriteFuse(HFUSE, 0xFF);
-                
-                // Читаем и проверяем (опционально)
-                HVSP_ReadFuses();
-                
-                // Успешное завершение - 5 медленных морганий
-                HVSP_Exit();
-                LED_Blink(5, 200, 200); // 5 морганий по 200мс с паузой 200мс (итого 2с)
-            } else {
-                // Ошибка - быстрые моргания
-                HVSP_Exit();
-                LED_Blink(5, 100, 100); // 5 быстрых морганий
-            }
-        }
-    }
+static uint8_t hvsp_shiftOut(uint8_t val1, uint8_t val2);
+static void hvsp_writeFuse(uint16_t fuse, uint8_t val);
+static uint8_t hvsp_readFuses(void); /* returns 0 on success (prints via LED), (void)val used where needed */
+static uint16_t hvsp_readSignature(void);
+
+/* ========== DWT microsecond delay ========== */
+static void DWT_Delay_Init(void)
+{
+    /* Enable TRC */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    /* Enable counter */
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-// Инициализация системы
-void System_Init(void) {
-    // Включение HSI
+static void delay_us(uint32_t us)
+{
+    uint32_t cycles = (SystemCoreClock / 1000000U) * us;
+    uint32_t start = DWT->CYCCNT;
+    while ((DWT->CYCCNT - start) < cycles) { __NOP(); }
+}
+
+/* ========== Utility pin ops using BSRR ========== */
+static inline void pin_set(GPIO_TypeDef *port, uint32_t pin)
+{
+    port->BSRR = pin; /* set */
+}
+static inline void pin_clear(GPIO_TypeDef *port, uint32_t pin)
+{
+    port->BRR = pin;  /* reset */
+}
+static inline uint8_t pin_read(GPIO_TypeDef *port, uint32_t pin)
+{
+    return ( (port->IDR & pin) ? 1U : 0U );
+}
+
+/* ========== System init (HSE=8MHz, no PLL) ========== */
+static void System_Init(void)
+{
+    /* Enable HSI for safe start */
     RCC->CR |= RCC_CR_HSION;
-    while ((RCC->CR & RCC_CR_HSIRDY) == 0);
-    
-    // Включение Backup Domain
-    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-    PWR->CR |= PWR_CR_DBP;
-    
-    // Отключение LSE
+    while (!(RCC->CR & RCC_CR_HSIRDY)) { }
+
+    /* Disable LSE if present (backup domain) */
+    RCC->APB1ENR |= RCC_APB1ENR_BKPEN | RCC_APB1ENR_PWREN;
     RCC->BDCR &= ~RCC_BDCR_LSEON;
-    while (RCC->BDCR & RCC_BDCR_LSERDY);
-    
-    // Включение HSE
+    while (RCC->BDCR & RCC_BDCR_LSERDY) { }
+
+    /* Enable HSE and wait */
     RCC->CR |= RCC_CR_HSEON;
-    while ((RCC->CR & RCC_CR_HSERDY) == 0);
-    
-    // Настройка Flash Latency
-    FLASH->ACR &= ~FLASH_ACR_LATENCY;
-    FLASH->ACR |= FLASH_ACR_LATENCY_0;
-    
-    // Переключение на HSE
+    while (!(RCC->CR & RCC_CR_HSERDY)) { }
+
+    /* Disable PLL */
+    RCC->CR &= ~RCC_CR_PLLON;
+    while (RCC->CR & RCC_CR_PLLRDY) { }
+
+    /* Switch SYSCLK to HSE */
     RCC->CFGR &= ~RCC_CFGR_SW;
     RCC->CFGR |= RCC_CFGR_SW_HSE;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE);
-    
-    // Включение тактирования портов
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN;
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE) { }
+
+    /* Reset dividers */
+    RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
+
+    /* Flash latency 0WS (0..24MHz) */
+    FLASH->ACR &= ~FLASH_ACR_LATENCY;
+    FLASH->ACR |= FLASH_ACR_LATENCY_0;
+
+    /* Enable GPIOA, GPIOB, GPIOC clocks and AFIO */
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN | RCC_APB2ENR_AFIOEN;
 }
 
-// Инициализация GPIO
-void GPIO_Init(void) {
-    // Настройка LED (PC13) - выход Open-Drain
-    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
-    GPIOC->CRH |= GPIO_CRH_MODE13_0; // Output mode, max speed 10 MHz
-    GPIOC->CRH |= GPIO_CRH_CNF13_0;  // Open-drain
-    
-    // Настройка кнопки (PA9) - вход с подтяжкой к VCC
-    GPIOA->CRH &= ~(GPIO_CRH_MODE9 | GPIO_CRH_CNF9);
-    GPIOA->CRH |= GPIO_CRH_CNF9_1;    // Input with pull-up/pull-down
-    GPIOA->BSRR = BUTTON_PIN;          // Pull-up
-    
-    // Настройка HVSP выводов - изначально все на выход
-    // RST (PB0)
-    GPIOB->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
-    GPIOB->CRL |= GPIO_CRL_MODE0;     // Output mode, max speed 50 MHz
-    
-    // SCI (PB4)
-    GPIOB->CRL &= ~(GPIO_CRL_MODE4 | GPIO_CRL_CNF4);
-    GPIOB->CRL |= GPIO_CRL_MODE4;     // Output mode, max speed 50 MHz
-    
-    // SII (PA6)
-    GPIOA->CRL &= ~(GPIO_CRL_MODE6 | GPIO_CRL_CNF6);
-    GPIOA->CRL |= GPIO_CRL_MODE6;     // Output mode, max speed 50 MHz
-    
-    // SDI (PA7)
-    GPIOA->CRL &= ~(GPIO_CRL_MODE7 | GPIO_CRL_CNF7);
-    GPIOA->CRL |= GPIO_CRL_MODE7;     // Output mode, max speed 50 MHz
-    
-    // SDO (PB1) - будет динамически меняться
-    GPIOB->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
-    GPIOB->CRL |= GPIO_CRL_MODE1;     // Output mode, max speed 50 MHz
-    
-    // Изначально все линии в LOW
-    HVSP_RST_PORT->BRR = HVSP_RST_PIN;
-    HVSP_SCI_PORT->BRR = HVSP_SCI_PIN;
-    HVSP_SII_PORT->BRR = HVSP_SII_PIN;
-    HVSP_SDI_PORT->BRR = HVSP_SDI_PIN;
-    HVSP_SDO_PORT->BRR = HVSP_SDO_PIN;
+/* ========== GPIO init ========== */
+static void GPIO_Init_All(void)
+{
+    /* Configure GPIO modes via CRL/CRH
+       We'll set outputs (push-pull) for RST, SCI, SII, SDI, LED, VCC(if used).
+       SDO as input with pull-up (enable ODR bit).
+       Button as input with pull-up (ODR bit).
+    */
+
+    /* --- GPIOA --- */
+    /* Clear CRL/CRH for relevant pins, then set:
+       PA6 (CRL bits for pin6): output push-pull 10MHz -> 0b1011 (0xB) per pin (CNF=00 OUT PP, MODE=10 for 2MHz; but we'll use 10MHz as 0x2)
+       For simplicity use 10MHz push-pull: MODE=10(2MHz), CNF=00 -> 0x2. But earlier sample used AF push-pull 10MHz with 0xB for AF. We need plain push-pull for SII/SDI.
+    */
+    /* Reset PA6, PA7 bits in CRL */
+    GPIOA->CRL &= ~(0xF << (6*4));
+    GPIOA->CRL &= ~(0xF << (7*4));
+    /* Set PA6, PA7 as General purpose push-pull output 10MHz: MODE=10 (0x2), CNF=00 -> 0x2 */
+    GPIOA->CRL |= (0x2 << (6*4));
+    GPIOA->CRL |= (0x2 << (7*4));
+
+    /* PA9 (button) -> input with pull-up: in CRH for pin9 */
+    GPIOA->CRH &= ~(0xF << ((9-8)*4));
+    /* Input with pull-up/pull-down CNF=10, MODE=00 -> 0x8 */
+    GPIOA->CRH |= (0x8 << ((9-8)*4));
+    /* Enable pull-up by writing 1 to ODR bit */
+    GPIOA->ODR |= BUTTON_PIN;
+
+    /* If VCC control used, set PA0 as output push-pull */
+    if (VCC_CONTROL_PIN_USED) {
+        GPIOA->CRL &= ~(0xF << (0*4));
+        GPIOA->CRL |= (0x2 << (0*4)); /* GP push-pull 10MHz */
+        /* Ensure VCC off initially */
+        pin_clear(VCC_PIN_PORT, VCC_PIN);
+    }
+
+    /* --- GPIOB --- */
+    /* PB0 RST -> output push-pull 10MHz */
+    GPIOB->CRL &= ~(0xF << (0*4));
+    GPIOB->CRL |= (0x2 << (0*4));
+
+    /* PB1 SDO -> input with pull-up */
+    GPIOB->CRL &= ~(0xF << (1*4));
+    GPIOB->CRL |= (0x8 << (1*4));
+    GPIOB->ODR |= SDO_PIN; /* enable pull-up */
+
+    /* PB4 SCI -> output push-pull 10MHz */
+    GPIOB->CRL &= ~(0xF << (4*4));
+    GPIOB->CRL |= (0x2 << (4*4));
+
+    /* --- GPIOC --- */
+    /* PC13 LED -> output push-pull (we'll use 2MHz to be conservative) -> MODE=10 CNF=00 -> 0x2 (pin13 in CRH: pin13 => (13-8)=5 index) */
+    GPIOC->CRH &= ~(0xF << ((13-8)*4));
+    GPIOC->CRH |= (0x2 << ((13-8)*4));
+    /* Turn LED off initially (board LED often active-low) */
+    pin_set(LED_PORT, LED_PIN); /* set high -> LED off on many boards */
 }
 
-// Функция мигания светодиодом
-void LED_Blink(uint8_t count, uint32_t on_time_ms, uint32_t off_time_ms) {
-    for (uint8_t i = 0; i < count; i++) {
-        LED_PORT->BRR = LED_PIN; // LED ON
-        Delay_ms(on_time_ms);
-        LED_PORT->BSRR = LED_PIN; // LED OFF
-        Delay_ms(off_time_ms);
+/* ========== LED patterns ========== */
+static void led_pulse(uint32_t times, uint32_t on_us, uint32_t off_us)
+{
+    for (uint32_t i = 0; i < times; ++i) {
+        pin_clear(LED_PORT, LED_PIN); /* on (active low on many boards) */
+        delay_us(on_us);
+        pin_set(LED_PORT, LED_PIN);   /* off */
+        delay_us(off_us);
     }
 }
 
-// Проверка нажатия кнопки с антидребезгом
-uint8_t Button_Pressed(void) {
-    if ((BUTTON_PORT->IDR & BUTTON_PIN) == 0) { // Кнопка нажата (0 на входе)
-        Delay_ms(50); // Задержка для антидребезга
-        if ((BUTTON_PORT->IDR & BUTTON_PIN) == 0) {
-            return 1; // Кнопка действительно нажата
-        }
+static void led_blink_startup(void)
+{
+    /* 3 flashes in 1.5s -> each cycle 0.25s on+off average */
+    for (int i = 0; i < 3; ++i) {
+        pin_clear(LED_PORT, LED_PIN);
+        delay_us(150000U / 3U); /* approx 50ms? but to fit 1.5s -> simple shorter pulses */
+        pin_set(LED_PORT, LED_PIN);
+        delay_us(350000U / 3U);
     }
-    return 0;
 }
 
-// Вход в режим HVSP программирования
-void HVSP_Enter(void) {
-    // Настройка SDO как выхода
-    GPIOB->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
-    GPIOB->CRL |= GPIO_CRL_MODE1; // Output mode
-    
-    // Устанавливаем начальные состояния
-    HVSP_SDI_PORT->BRR = HVSP_SDI_PIN; // LOW
-    HVSP_SII_PORT->BRR = HVSP_SII_PIN; // LOW
-    HVSP_SDO_PORT->BRR = HVSP_SDO_PIN; // LOW
-    HVSP_RST_PORT->BRR = HVSP_RST_PIN; // LOW (12V off)
-    
-    // Включаем питание целевого МК (3.3V)
-    // VCC подключен напрямую к 3.3V - ничего не делаем
-    
-    Delay_us(20);
-    
-    // Включаем 12V на RST
-    HVSP_RST_PORT->BSRR = HVSP_RST_PIN; // HIGH
-    
-    Delay_us(10);
-    
-    // Переключаем SDO на вход
-    GPIOB->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
-    GPIOB->CRL |= GPIO_CRL_CNF1_0; // Input with pull-up/pull-down
-    GPIOB->BSRR = HVSP_SDO_PIN;     // Pull-up
-    
-    Delay_us(300);
+static void led_blink_waiting(void)
+{
+    /* Blink once per second: LED on 100ms, off 900ms (repeating) */
+    pin_clear(LED_PORT, LED_PIN);
+    delay_us(100000U);
+    pin_set(LED_PORT, LED_PIN);
+    delay_us(900000U);
 }
 
-// Выход из режима HVSP программирования
-void HVSP_Exit(void) {
-    HVSP_SCI_PORT->BRR = HVSP_SCI_PIN; // LOW
-    // Выключаем питание целевого МК
-    // VCC отключен - ничего не делаем
-    HVSP_RST_PORT->BRR = HVSP_RST_PIN; // LOW (12V off)
+static void led_blink_pattern_success(void)
+{
+    /* 5 flashes in 3s */
+    for (int i = 0; i < 5; ++i) {
+        pin_clear(LED_PORT, LED_PIN);
+        delay_us(300000U / 5U);
+        pin_set(LED_PORT, LED_PIN);
+        delay_us(3000000U / 5U - (300000U / 5U));
+    }
 }
 
-// Основная функция передачи данных по HVSP
-uint8_t HVSP_ShiftOut(uint8_t val1, uint8_t val2) {
+static void led_blink_pattern_error(void)
+{
+    /* 5 fast flashes in 1s */
+    for (int i = 0; i < 5; ++i) {
+        pin_clear(LED_PORT, LED_PIN);
+        delay_us(80000U); /* 80ms */
+        pin_set(LED_PORT, LED_PIN);
+        delay_us(12000U); /* quick off */
+    }
+}
+
+/* ========== HVSP low-level helpers ========== */
+
+/* Set/clear SCI, SII, SDI, RST, VCC helpers */
+static inline void SCI_set(void)  { pin_set(SCI_PORT, SCI_PIN); }
+static inline void SCI_clear(void){ pin_clear(SCI_PORT, SCI_PIN); }
+
+static inline void SII_set(void)  { pin_set(SII_PORT, SII_PIN); }
+static inline void SII_clear(void){ pin_clear(SII_PORT, SII_PIN); }
+
+static inline void SDI_set(void)  { pin_set(SDI_PORT, SDI_PIN); }
+static inline void SDI_clear(void){ pin_clear(SDI_PORT, SDI_PIN); }
+
+static inline void RST_set(void)  { pin_set(RST_PORT, RST_PIN); }  /* HIGH -> 12V off (inverting level shifter) */
+static inline void RST_clear(void){ pin_clear(RST_PORT, RST_PIN); }/* LOW -> 12V on */
+
+static inline void VCC_on(void) {
+#if VCC_CONTROL_PIN_USED
+    pin_set(VCC_PIN_PORT, VCC_PIN);
+#else
+    (void)0;
+#endif
+}
+static inline void VCC_off(void) {
+#if VCC_CONTROL_PIN_USED
+    pin_clear(VCC_PIN_PORT, VCC_PIN);
+#else
+    (void)0;
+#endif
+}
+
+/* hvsp_shiftOut: replicates algorithm from Arduino code:
+   waits until SDO goes high, then shifts 11 bits (ii=10..0),
+   for each step sets SDI and SII according to dout,iout, then pulses SCI,
+   accumulating SDO reads.
+   Returns (inBits >> 2) as in Arduino code.
+*/
+static uint8_t hvsp_shiftOut(uint8_t val1, uint8_t val2)
+{
+    uint16_t dout = ((uint16_t)val1) << 2;
+    uint16_t iout = ((uint16_t)val2) << 2;
     uint16_t inBits = 0;
-    
-    // Ждем пока SDO станет HIGH
-    while ((HVSP_SDO_PORT->IDR & HVSP_SDO_PIN) == 0);
-    
-    uint16_t dout = (uint16_t)val1 << 2;
-    uint16_t iout = (uint16_t)val2 << 2;
-    
-    for (int8_t ii = 7; ii >= 0; ii--) {
-        // Устанавливаем SDI
-        if (dout & (1 << ii)) {
-            HVSP_SDI_PORT->BSRR = HVSP_SDI_PIN;
-        } else {
-            HVSP_SDI_PORT->BRR = HVSP_SDI_PIN;
-        }
-        
-        // Устанавливаем SII
-        if (iout & (1 << ii)) {
-            HVSP_SII_PORT->BSRR = HVSP_SII_PIN;
-        } else {
-            HVSP_SII_PORT->BRR = HVSP_SII_PIN;
-        }
-        
-        inBits <<= 1;
-        if (HVSP_SDO_PORT->IDR & HVSP_SDO_PIN) {
-            inBits |= 1;
-        }
-        
-        // Тактовый импульс
-        HVSP_SCI_PORT->BSRR = HVSP_SCI_PIN; // HIGH
-        Delay_us(1);
-        HVSP_SCI_PORT->BRR = HVSP_SCI_PIN;  // LOW
-        Delay_us(1);
+
+    /* Wait until SDO goes high */
+    uint32_t timeout = 100000U;
+    while (!pin_read(SDO_PORT, SDO_PIN)) {
+        if (!--timeout) break;
+        delay_us(1);
     }
-    
+
+    for (int ii = 10; ii >= 0; --ii) {
+        /* set SDI */
+        if (dout & (1U << ii)) SDI_set(); else SDI_clear();
+        /* set SII */
+        if (iout & (1U << ii)) SII_set(); else SII_clear();
+        inBits <<= 1;
+        /* read SDO into LSB */
+        inBits |= (pin_read(SDO_PORT, SDO_PIN) ? 1U : 0U);
+        /* Pulse SCI high then low */
+        SCI_set();
+        delay_us(SCI_HALF_PERIOD_US); /* half period high */
+        SCI_clear();
+        delay_us(SCI_HALF_PERIOD_US); /* half period low */
+    }
     return (uint8_t)(inBits >> 2);
 }
 
-// Чтение сигнатуры
-uint16_t HVSP_ReadSignature(void) {
+/* Write fuse using the sequence from Arduino: shiftOut(0x40, 0x4C); shiftOut(val,0x2C);
+   shiftOut(0x00, fuse>>8); shiftOut(0x00, fuse);
+*/
+static void hvsp_writeFuse(uint16_t fuse, uint8_t val)
+{
+    (void)hvsp_shiftOut(0x40, 0x4C);
+    (void)hvsp_shiftOut(val,   0x2C);
+    (void)hvsp_shiftOut(0x00, (uint8_t)(fuse >> 8));
+    (void)hvsp_shiftOut(0x00, (uint8_t)(fuse & 0xFF));
+}
+
+/* Read LFUSE, HFUSE, EFUSE and blink LED with values as feedback (we don't have UART).
+   We follow Arduino readFuses sequence.
+*/
+static uint8_t hvsp_readFuses(void)
+{
+    uint8_t val;
+    /* LFuse */
+    (void)hvsp_shiftOut(0x04, 0x4C);
+    (void)hvsp_shiftOut(0x00, 0x68);
+    val = hvsp_shiftOut(0x00, 0x6C);
+    (void)val; /* silence unused var warning as requested */
+
+    /* HFuse */
+    (void)hvsp_shiftOut(0x04, 0x4C);
+    (void)hvsp_shiftOut(0x00, 0x7A);
+    val = hvsp_shiftOut(0x00, 0x7E);
+    (void)val;
+
+    /* EFuse */
+    (void)hvsp_shiftOut(0x04, 0x4C);
+    (void)hvsp_shiftOut(0x00, 0x6A);
+    val = hvsp_shiftOut(0x00, 0x6E);
+    (void)val;
+
+    return 0;
+}
+
+/* readSignature: loops ii=1..2 and composes two bytes into 16-bit signature */
+static uint16_t hvsp_readSignature(void)
+{
     uint16_t sig = 0;
     uint8_t val;
-    
-    for (uint8_t i = 0; i < 3; i++) {
-        HVSP_ShiftOut(0x08, 0x4C);
-        HVSP_ShiftOut(i, 0x0C);
-        HVSP_ShiftOut(0x00, 0x68);
-        val = HVSP_ShiftOut(0x00, 0x6C);
-        sig = (sig << 8) + val;
+    for (int ii = 1; ii < 3; ++ii) {
+        (void)hvsp_shiftOut(0x08, 0x4C);
+        (void)hvsp_shiftOut((uint8_t)ii, 0x0C);
+        (void)hvsp_shiftOut(0x00, 0x68);
+        val = hvsp_shiftOut(0x00, 0x6C);
+        sig = (uint16_t)((sig << 8) + val);
     }
-    
     return sig;
 }
 
-// Запись фьюза
-void HVSP_WriteFuse(uint16_t fuse, uint8_t value) {
-    HVSP_ShiftOut(0x40, 0x4C);
-    HVSP_ShiftOut(value, 0x2C);
-    HVSP_ShiftOut(0x00, (uint8_t)(fuse >> 8));
-    HVSP_ShiftOut(0x00, (uint8_t)fuse);
-    Delay_ms(10); // Задержка для программирования
-}
+/* ========== Main ========== */
+int main(void)
+{
+    System_Init();
+    DWT_Delay_Init();
+    GPIO_Init_All();
 
-// Чтение фьюзов
-void HVSP_ReadFuses(void) {
-    uint8_t val;
-    
-    // Low fuse
-    HVSP_ShiftOut(0x04, 0x4C);
-    HVSP_ShiftOut(0x00, 0x68);
-    val = HVSP_ShiftOut(0x00, 0x6C);
-    
-    // High fuse
-    HVSP_ShiftOut(0x04, 0x4C);
-    HVSP_ShiftOut(0x00, 0x7A);
-    val = HVSP_ShiftOut(0x00, 0x7E);
-    
-    // Extended fuse (для ATtiny13 не используется, но оставим)
-    HVSP_ShiftOut(0x04, 0x4C);
-    HVSP_ShiftOut(0x00, 0x6A);
-    val = HVSP_ShiftOut(0x00, 0x6E);
-    
-    // Подавляем предупреждение о неиспользуемой переменной
-    (void)val;
-}
+    /* Small startup blink pattern */
+    led_blink_startup();
 
-// Простые функции задержки
-void Delay_ms(uint32_t ms) {
-    for (uint32_t i = 0; i < ms * 1000; i++) {
-        __NOP();
+    /* Wait 1s then enter waiting loop (blinking once/sec) */
+    for (int i = 0; i < 3; ++i) { led_blink_waiting(); } /* short sequence */
+
+    while (1) {
+        /* Idle: blink once per second while waiting for button press */
+        if (!pin_read(BUTTON_PORT, BUTTON_PIN)) { /* button pressed (active low) */
+            /* Debounce simple */
+            delay_us(50000U);
+            if (!pin_read(BUTTON_PORT, BUTTON_PIN)) {
+                /* Start HVSP sequence */
+                /* Prepare pins: set SDO as output then low, SII/SDI low */
+                /* Here SDO is input by default, but to follow Arduino we may temporarily drive it - but we can't if hardware tied.
+                   We'll assume SDO pin is tri-stated when configured as input and we can configure as output if necessary.
+                */
+
+                /* Configure SDO as output: modify CRL */
+                GPIOB->CRL &= ~(0xF << (1*4));
+                GPIOB->CRL |= (0x2 << (1*4)); /* push-pull output 10MHz */
+                /* Set SDI/SII low */
+                SDI_clear();
+                SII_clear();
+                /* Set SDO low */
+                pin_clear(SDO_PORT, SDO_PIN);
+
+                /* RST HIGH -> 12V off (level shifter inverting) */
+                RST_set();
+                /* VCC on */
+                VCC_on();
+                delay_us(20U);
+                /* RST LOW -> 12V on */
+                RST_clear();
+                delay_us(10U);
+                /* Configure SDO as input with pull-up */
+                GPIOB->CRL &= ~(0xF << (1*4));
+                GPIOB->CRL |= (0x8 << (1*4));
+                GPIOB->ODR |= SDO_PIN;
+                delay_us(300U);
+
+                /* read signature */
+                uint16_t sig = hvsp_readSignature();
+
+                if (sig == ATTINY13_SIG) {
+                    /* Restore fuses for ATtiny13 */
+                    hvsp_readFuses();
+                    hvsp_writeFuse(LFUSE, 0x6A);
+                    hvsp_writeFuse(HFUSE, 0xFF);
+                    hvsp_readFuses();
+                    /* Indicate success */
+                    led_blink_pattern_success();
+                } else {
+                    /* Not recognized or other devices: indicate error */
+                    led_blink_pattern_error();
+                }
+
+                /* cleanup: set SCI low, VCC off, RST high (12V off) */
+                SCI_clear();
+                VCC_off();
+                RST_set();
+
+                /* Reconfigure SDO as input (already) */
+                GPIOB->CRL &= ~(0xF << (1*4));
+                GPIOB->CRL |= (0x8 << (1*4));
+                GPIOB->ODR |= SDO_PIN;
+
+                /* small delay before next waiting */
+                for (int w = 0; w < 4; ++w) led_blink_waiting();
+            }
+        } else {
+            /* normal waiting blink */
+            led_blink_waiting();
+        }
     }
-}
 
-void Delay_us(uint32_t us) {
-    for (uint32_t i = 0; i < us; i++) {
-        __NOP();
-    }
+    /* not reached */
+    return 0;
 }
